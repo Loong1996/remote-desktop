@@ -791,28 +791,29 @@ pub struct PeerSession {
 In `build`, after the peer connection and data-channel wiring, add the video track and start the pipeline (constants come from Global Constraints):
 
 ```rust
-        // Video: add a sendonly H264 track and start the capture→encode pipeline.
+        // Video: start the capture→encode pipeline and add a sendonly H264 track.
+        let (dst_w, dst_h, fps) = (1280u32, 720u32, 30u32);
+        // Build the encoder BEFORE adding the track. If init fails we add NO
+        // video track, so the remote negotiates input-only (Plan 3 behavior)
+        // rather than a sendonly video m-line that is never fed (black screen).
+        let encoder: Box<dyn crate::video::VideoEncoder> = match Openh264Encoder::new(dst_w, dst_h, 3_000_000, fps as f32) {
+            Ok(e) => Box::new(e),
+            Err(e) => {
+                tracing::error!("H264 encoder init failed, video disabled: {e}");
+                return Self::finish(pc, input_tx, None);
+            }
+        };
         let video_track = Arc::new(TrackLocalStaticSample::new(
             RTCRtpCodecCapability { mime_type: "video/H264".to_owned(), clock_rate: 90000, ..Default::default() },
             "video".to_owned(),
             "rd-agent".to_owned(),
         ));
         pc.add_track(video_track.clone()).await?;
-
-        let (dst_w, dst_h, fps) = (1280u32, 720u32, 30u32);
         let sink: Arc<dyn SampleSink> = Arc::new(TrackSampleSink {
             track: video_track,
             handle: tokio::runtime::Handle::current(),
         });
         let capturer = make_source(dst_w, dst_h, fps);
-        let encoder: Box<dyn crate::video::VideoEncoder> = match Openh264Encoder::new(dst_w, dst_h, 3_000_000, fps as f32) {
-            Ok(e) => Box::new(e),
-            Err(e) => {
-                tracing::error!("H264 encoder init failed, video disabled: {e}");
-                // still return a session (input-only) — mirror the injector-fail path
-                return Self::finish(pc, input_tx, None);
-            }
-        };
         let video = VideoPipeline::start(capturer, encoder, sink, dst_w as usize, dst_h as usize, 60);
         Self::finish(pc, input_tx, Some(video))
 ```
