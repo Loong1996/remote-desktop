@@ -13,9 +13,12 @@
 | 2b | `@rd/web` (React: login, device list, WebRTC session + echo UI), `infra/coturn`, agent bidirectional trickle ICE, server CORS | ✅ merged |
 | 3 | **Mouse/keyboard injection** (`enigo` injector thread + full `KeyboardEvent.code` keymap, macOS Accessibility check, web capture panel + event log, pre-offer ICE buffer) | ✅ merged |
 | 4 | **Screen capture + H.264 video** (ScreenCaptureKit capture + openh264 software encode behind traits, VideoPipeline thread → sendonly H264 track, web recvonly transceiver + `<video>`, macOS Screen-Recording check; test-pattern-first de-risking) | ✅ merged, macOS only |
-| 5 | **macOS video hardening** (SckCapturer owns/stops its SCStream on session end + 720p/30fps capture; agent+web stuck-key release; letterbox coord mapping; convert 0×0 guard) | ✅ done (branch `plan5-macos-video-hardening`) |
+| 5 | **macOS video hardening** (SckCapturer owns/stops its SCStream on session end + 720p/30fps capture; agent+web stuck-key release; letterbox coord mapping; convert 0×0 guard) | ✅ merged |
+| 6 | **Agent reliability + session lifecycle** (agent WS auto-reconnect w/ exponential backoff, fatal-stop on bad-token; server sends `peer-left` on any connection close; agent handles `peer-left` → releases session) | ✅ done (branch `plan6-agent-reliability`) |
 
-Tests currently green: Node `npm test` → 64; agent `cargo test` → 37 (+2 `#[ignore]` real-hardware: SCK capture, enigo injection); `npm run typecheck` clean; `cargo clippy --all-targets` clean; web `@rd/web build` clean.
+Tests currently green: Node `npm test` → 66; agent `cargo test` → 39 (+2 `#[ignore]` real-hardware: SCK capture, enigo injection); `npm run typecheck` clean; `cargo clippy --all-targets` clean; web `@rd/web build` clean.
+
+Plan 6 docs: `docs/superpowers/specs/2026-07-02-plan6-agent-reliability-design.md`, `docs/superpowers/plans/2026-07-02-plan6-agent-reliability.md`; reliability smoke notes in `plan4-video-smoke.md`.
 
 Plan 5 docs: `docs/superpowers/specs/2026-07-02-plan5-macos-video-hardening-design.md`, `docs/superpowers/plans/2026-07-02-plan5-macos-video-hardening.md`; smoke notes appended to `plan4-video-smoke.md`.
 
@@ -55,12 +58,12 @@ macOS remote access is complete and hardened (Plans 3–5). Next major thrust:
 ### Server (`packages/server`)
 - `/register` `findByEmail`→`create` not atomic → concurrent duplicate email surfaces a raw 500 instead of 409. Wrap `create` in try/catch mapping the SQLite UNIQUE error → 409.
 - Email lookup is case-sensitive. Normalize to lowercase on register + login (and store normalized).
-- Agent mid-session disconnect doesn't notify the surviving peer (no `peer-left`/`error`). Design §5⑥/§7 require it — wire `Registry.remove`/close to emit to the peer. Web/agent then consume it (stop hanging).
+- ~~Agent mid-session disconnect doesn't notify the surviving peer~~ — FIXED in Plan 6: `Registry.remove` returns affected peers and the hub sends `peer-left` on any connection close; agent + web both consume it.
 - Minor test gaps: repo `findById`/not-found paths, garbage-`Bearer`→401, `agent-online`-with-bad-token WS test.
 - CORS is dev-only (`http://localhost|127.0.0.1:\d+`). Add a config-driven allowlist (incl. https) for production.
 
 ### Agent (`agent/`)
-- No reconnect loop — `run_agent` returns `Ok(())` and the process exits when the signaling socket closes. Add exponential-backoff reconnect.
+- ~~No reconnect loop~~ — FIXED in Plan 6: `run_agent` now loops `run_session` with exponential backoff (cap 30s), stopping only on a `bad-token` Fatal.
 - Superseded `PeerSession` (new `incoming` while one is active) is dropped without `close()`. Call `close()` on the old one.
 - Superseded-session candidate mis-tagging (a queued candidate from the old session can be tagged with the new session id). Benign (browser rejects mismatched-cred candidates); tag candidates with their session id at emit time to be safe.
 - `accept_offer` still waits for full ICE gathering before returning the answer (latency; candidates also trickle). Return the answer sooner for lower connect latency.
@@ -87,9 +90,9 @@ macOS remote access is complete and hardened (Plans 3–5). Next major thrust:
 3. **Install + verify:**
    ```bash
    npm install
-   npm test           # expect 64 passing
+   npm test           # expect 66 passing
    npm run typecheck  # clean
-   cargo test --manifest-path agent/Cargo.toml   # expect 37 passing +2 ignored (first build pulls webrtc-rs + enigo + openh264 source + screencapturekit — slow)
+   cargo test --manifest-path agent/Cargo.toml   # expect 39 passing +2 ignored (first build pulls webrtc-rs + enigo + openh264 source + screencapturekit — slow)
    ```
 4. **Try the e2e echo:** follow `docs/superpowers/plan2b-e2e-smoke.md` (server + coturn + agent + web → browser shows `echo:hello`).
 5. **Read before coding:** the design spec, then `docs/superpowers/plans/`, then this backlog.
