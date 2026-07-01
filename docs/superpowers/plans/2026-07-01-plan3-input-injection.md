@@ -556,14 +556,15 @@ Add a third test module to `agent/src/input.rs`:
 mod injector_tests {
     use super::*;
 
-    // Sending to a started injector must not panic and the worker must drain.
-    // (No display is required: if enigo init fails the worker drain-drops.)
+    // While the injector is alive the channel is open, so sends succeed. (No
+    // display is required: if enigo init fails the worker drain-drops instead
+    // of closing the channel.)
     #[test]
-    fn start_send_and_drop_does_not_panic() {
+    fn sender_accepts_events_while_alive() {
         let injector = InputInjector::start();
         let tx = injector.sender();
-        tx.send(InputEvent::MMove { x: 0.5, y: 0.5 }).unwrap();
-        tx.send(InputEvent::KDown { code: "KeyA".into() }).unwrap();
+        assert!(tx.send(InputEvent::MMove { x: 0.5, y: 0.5 }).is_ok());
+        assert!(tx.send(InputEvent::KDown { code: "KeyA".into() }).is_ok());
         drop(tx);
         drop(injector); // closes channel; worker exits
     }
@@ -680,7 +681,7 @@ Note: `Button`/`Key` are already imported from Task 3; merge the import lines so
 - [ ] **Step 4: Run to verify the non-ignored test passes**
 
 Run: `export PATH="$HOME/.cargo/bin:$PATH"; cargo test --manifest-path agent/Cargo.toml --lib injector_tests`
-Expected: PASS (`start_send_and_drop_does_not_panic`; `injects_a_mouse_move` shows as ignored).
+Expected: PASS (`sender_accepts_events_while_alive`; `injects_a_mouse_move` shows as ignored).
 
 - [ ] **Step 5: Commit**
 
@@ -722,10 +723,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn check_is_callable_and_returns_bool() {
-        // Just verify it runs without panicking. On non-macOS this is always
-        // true; on macOS it reflects the current Accessibility trust state.
-        let _trusted: bool = check_input_permission();
+    fn check_returns_true_off_macos() {
+        // Off macOS the check is a no-op that must report available.
+        #[cfg(not(target_os = "macos"))]
+        assert!(check_input_permission());
+        // On macOS it reflects the live Accessibility trust state, which a unit
+        // test can't assert; just confirm it runs without panicking.
+        #[cfg(target_os = "macos")]
+        {
+            let _trusted: bool = check_input_permission();
+        }
     }
 }
 ```
