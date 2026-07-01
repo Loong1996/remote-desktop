@@ -90,6 +90,18 @@ export function mouseButtonName(button: number): MouseButton | null {
   }
 }
 
+/** The kup/mup events needed to release a set of currently-held keys/buttons
+ *  (used when the capture surface loses focus so nothing sticks down remotely). */
+export function releaseEvents(keys: string[], buttons: number[]): InputEvent[] {
+  const out: InputEvent[] = [];
+  for (const code of keys) out.push({ t: "kup", code });
+  for (const b of buttons) {
+    const button = mouseButtonName(b);
+    if (button) out.push({ t: "mup", button });
+  }
+  return out;
+}
+
 /** Resolve the MediaStream for an incoming track: prefer the negotiated
  *  stream, else build one from the track. `mk` is injectable for testing. */
 export function streamFromTrackEvent(

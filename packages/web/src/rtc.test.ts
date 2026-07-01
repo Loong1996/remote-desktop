@@ -9,6 +9,7 @@ import {
   mouseButtonName,
   streamFromTrackEvent,
   contentRect,
+  releaseEvents,
 } from "./rtc.js";
 
 describe("deriveWsUrl", () => {
@@ -122,4 +123,19 @@ test("contentRect: no stream falls back to the element box", () => {
   expect(contentRect({ width: 320, height: 240 }, 0, 0)).toEqual({
     left: 0, top: 0, width: 320, height: 240,
   });
+});
+
+test("releaseEvents produces kup/mup for held keys and buttons", () => {
+  const evs = releaseEvents(["ShiftLeft", "KeyA"], [0, 2]);
+  // every event is protocol-valid
+  evs.forEach((e) => expect(() => parseInputEvent(e)).not.toThrow());
+  expect(evs).toContainEqual({ t: "kup", code: "ShiftLeft" });
+  expect(evs).toContainEqual({ t: "kup", code: "KeyA" });
+  expect(evs).toContainEqual({ t: "mup", button: "left" });
+  expect(evs).toContainEqual({ t: "mup", button: "right" });
+  expect(evs.length).toBe(4);
+});
+
+test("releaseEvents skips unknown button ids", () => {
+  expect(releaseEvents([], [5])).toEqual([]);
 });
