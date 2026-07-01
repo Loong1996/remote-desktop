@@ -35,9 +35,9 @@ fn pipeline_stops_producing_after_drop() {
     std::thread::sleep(std::time::Duration::from_millis(300));
     drop(pipeline);
     // let any in-flight frame settle, then snapshot
-    std::thread::sleep(std::time::Duration::from_millis(400));
+    std::thread::sleep(std::time::Duration::from_millis(700));
     let count = sink.0.lock().unwrap().len();
-    std::thread::sleep(std::time::Duration::from_millis(400));
+    std::thread::sleep(std::time::Duration::from_millis(700));
     let after = sink.0.lock().unwrap().len();
     assert_eq!(count, after, "pipeline kept producing samples after drop (thread leak)");
 }

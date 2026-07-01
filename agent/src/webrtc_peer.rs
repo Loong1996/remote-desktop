@@ -276,6 +276,18 @@ impl PeerSession {
         self.pc.close().await?;
         Ok(())
     }
+
+    /// Number of RTP senders that currently have a local track attached — i.e.
+    /// how many media tracks the agent actually added (0 without `add_track`).
+    pub async fn video_sender_count(&self) -> usize {
+        let mut n = 0;
+        for s in self.pc.get_senders().await {
+            if s.track().await.is_some() {
+                n += 1;
+            }
+        }
+        n
+    }
 }
 
 #[cfg(test)]

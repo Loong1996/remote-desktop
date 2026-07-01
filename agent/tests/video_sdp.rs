@@ -40,8 +40,11 @@ async fn agent_answer_includes_video_when_offer_requests_it() {
     // agent sends video → its m-line is sendonly (or sendrecv)
     assert!(answer_sdp.contains("a=sendonly") || answer_sdp.contains("a=sendrecv"),
         "video not sendable in answer:\n{answer_sdp}");
-    // the agent's H264 track must be negotiated: the answer advertises H264.
-    assert!(answer_sdp.contains("H264"), "answer video has no H264 rtpmap:\n{answer_sdp}");
+    // REAL gate: SDP substrings (m=video/H264/sendonly) come from codec
+    // registration + transceiver mirroring, so they pass even without a track.
+    // Assert the agent actually attached a sendable video track — red if
+    // pc.add_track is removed.
+    assert_eq!(agent.video_sender_count().await, 1, "agent has no attached video sender track");
 
     let _ = RTCSessionDescription::answer(answer_sdp).unwrap();
     agent.close().await.unwrap();
