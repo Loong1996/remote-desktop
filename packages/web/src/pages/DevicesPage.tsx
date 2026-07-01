@@ -15,20 +15,28 @@ export function DevicesPage({ token, onSelectDevice, onLogout }: DevicesPageProp
   const [pairName, setPairName] = useState("");
   const [pairedToken, setPairedToken] = useState<string | null>(null);
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    setError(null);
+  // `silent` polls (background refresh) don't toggle the loading spinner or
+  // surface transient errors, so the list updates without flicker.
+  const refresh = useCallback(async (silent = false) => {
+    if (!silent) {
+      setLoading(true);
+      setError(null);
+    }
     try {
       setDevices(await listDevices(token));
+      if (silent) setError(null); // a recovered poll clears any stale error
     } catch (e) {
-      setError(e instanceof Error ? e.message : "failed to load devices");
+      if (!silent) setError(e instanceof Error ? e.message : "failed to load devices");
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [token]);
 
   useEffect(() => {
     void refresh();
+    // Poll so online/offline (incl. agent reconnects) show without a manual reload.
+    const id = setInterval(() => void refresh(true), 5000);
+    return () => clearInterval(id);
   }, [refresh]);
 
   async function pair() {
