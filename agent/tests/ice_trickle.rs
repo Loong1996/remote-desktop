@@ -90,3 +90,19 @@ async fn agent_trickles_ice_and_echoes() {
     agent.close().await.unwrap();
     web.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn pre_offer_remote_candidate_is_buffered_not_dropped() {
+    let (agent_ice_tx, _rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
+    let agent = rd_agent::webrtc_peer::PeerSession::new(vec![], agent_ice_tx)
+        .await
+        .unwrap();
+    // A candidate arriving before accept_offer must be accepted (buffered), not error.
+    let candidate = serde_json::json!({
+        "candidate": "candidate:1 1 udp 2130706431 127.0.0.1 54321 typ host",
+        "sdpMid": "0",
+        "sdpMLineIndex": 0
+    });
+    agent.add_remote_ice(candidate).await.unwrap();
+    agent.close().await.unwrap();
+}

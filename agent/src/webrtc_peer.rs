@@ -1,6 +1,7 @@
 use crate::protocol::IceServer;
 use anyhow::Result;
 use std::sync::Arc;
+use std::sync::Mutex;
 use tokio::sync::mpsc::UnboundedSender;
 use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::MediaEngine;
@@ -14,8 +15,36 @@ use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
 
+/// Buffers remote ICE candidates that arrive before the remote description is
+/// set. `accept` returns `Some(c)` when the candidate can be added immediately,
+/// or `None` when it has been buffered. `on_remote_set` marks the remote
+/// description as set and returns the buffered candidates to flush, in order.
+pub(crate) struct IceBuffer<T> {
+    remote_set: bool,
+    pending: Vec<T>,
+}
+
+impl<T> IceBuffer<T> {
+    pub(crate) fn new() -> Self {
+        Self { remote_set: false, pending: Vec::new() }
+    }
+    pub(crate) fn accept(&mut self, candidate: T) -> Option<T> {
+        if self.remote_set {
+            Some(candidate)
+        } else {
+            self.pending.push(candidate);
+            None
+        }
+    }
+    pub(crate) fn on_remote_set(&mut self) -> Vec<T> {
+        self.remote_set = true;
+        std::mem::take(&mut self.pending)
+    }
+}
+
 pub struct PeerSession {
     pc: Arc<RTCPeerConnection>,
+    ice_buffer: Mutex<IceBuffer<RTCIceCandidateInit>>,
 }
 
 fn to_rtc_ice(servers: Vec<IceServer>) -> Vec<RTCIceServer> {
@@ -109,7 +138,7 @@ impl PeerSession {
             Box::pin(async {})
         }));
 
-        Ok(PeerSession { pc })
+        Ok(PeerSession { pc, ice_buffer: Mutex::new(IceBuffer::new()) })
     }
 
     /// Handle a remote offer and return the local answer SDP. Waits for ICE
@@ -118,6 +147,12 @@ impl PeerSession {
     pub async fn accept_offer(&self, offer_sdp: &str) -> Result<String> {
         let offer = RTCSessionDescription::offer(offer_sdp.to_string())?;
         self.pc.set_remote_description(offer).await?;
+        let flushed = { self.ice_buffer.lock().unwrap().on_remote_set() };
+        for init in flushed {
+            if let Err(e) = self.pc.add_ice_candidate(init).await {
+                tracing::warn!("failed to add buffered ice candidate: {e}");
+            }
+        }
         let answer = self.pc.create_answer(None).await?;
         let mut gather_complete = self.pc.gathering_complete_promise().await;
         self.pc.set_local_description(answer).await?;
@@ -132,12 +167,30 @@ impl PeerSession {
 
     pub async fn add_remote_ice(&self, candidate: serde_json::Value) -> Result<()> {
         let init: RTCIceCandidateInit = serde_json::from_value(candidate)?;
-        self.pc.add_ice_candidate(init).await?;
+        let ready = { self.ice_buffer.lock().unwrap().accept(init) };
+        if let Some(init) = ready {
+            self.pc.add_ice_candidate(init).await?;
+        }
         Ok(())
     }
 
     pub async fn close(&self) -> Result<()> {
         self.pc.close().await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod ice_buffer_tests {
+    use super::IceBuffer;
+
+    #[test]
+    fn buffers_until_remote_set_then_drains_in_order() {
+        let mut b: IceBuffer<i32> = IceBuffer::new();
+        assert_eq!(b.accept(1), None); // buffered
+        assert_eq!(b.accept(2), None); // buffered
+        assert_eq!(b.on_remote_set(), vec![1, 2]); // flushed in order
+        assert_eq!(b.accept(3), Some(3)); // now passes through
+        assert_eq!(b.on_remote_set(), Vec::<i32>::new()); // idempotent, nothing pending
     }
 }
