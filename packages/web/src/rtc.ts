@@ -4,6 +4,8 @@ import {
   type Sdp,
   type Ice,
   type IceServer,
+  type InputEvent,
+  type MouseButton,
 } from "@rd/protocol";
 
 // ---------------------------------------------------------------------------
@@ -44,6 +46,33 @@ export function buildIce(sessionId: string, candidate: unknown): Ice {
   return { type: "ice", sessionId, candidate };
 }
 
+/** Map an absolute pointer position to relative [0,1] coords within `rect`. */
+export function mouseCoords(
+  clientX: number,
+  clientY: number,
+  rect: { left: number; top: number; width: number; height: number },
+): { x: number; y: number } {
+  const clamp = (n: number) => Math.min(1, Math.max(0, n));
+  return {
+    x: clamp((clientX - rect.left) / rect.width),
+    y: clamp((clientY - rect.top) / rect.height),
+  };
+}
+
+/** Map a DOM `MouseEvent.button` id to the protocol button name (or null). */
+export function mouseButtonName(button: number): MouseButton | null {
+  switch (button) {
+    case 0:
+      return "left";
+    case 1:
+      return "middle";
+    case 2:
+      return "right";
+    default:
+      return null;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Live session orchestration (browser WebRTC + WebSocket).
 // ---------------------------------------------------------------------------
@@ -56,8 +85,6 @@ export type ConnectionState =
   | "error";
 
 export interface SessionCallbacks {
-  /** Called with each text message echoed back over the data channel. */
-  onEcho?: (text: string) => void;
   /** Called on every connection-state transition. */
   onState?: (state: ConnectionState) => void;
   /** Called on any fatal error (WS error, signaling error message, etc.). */
@@ -65,23 +92,23 @@ export interface SessionCallbacks {
 }
 
 export interface Session {
-  /** Send a text message over the "echo" data channel (no-op until open). */
-  send: (text: string) => void;
+  /** Send an InputEvent over the "input" data channel (no-op until open). */
+  sendInput: (ev: InputEvent) => void;
   /** Tear down the data channel, peer connection, and WebSocket. */
   close: () => void;
 }
 
 /**
- * Connect to a device via the signaling server and open an "echo" data channel.
+ * Connect to a device via the signaling server and open an "input" data channel.
  *
  * Flow (web is the offerer):
  *   WS open → send {connect,deviceId}
- *   ← session-ready{sessionId,iceServers} → new RTCPeerConnection, createDataChannel("echo"),
+ *   ← session-ready{sessionId,iceServers} → new RTCPeerConnection, createDataChannel("input"),
  *     createOffer → setLocalDescription → send {sdp,offer}
  *   pc.onicecandidate → send {ice}
  *   ← sdp{answer} → setRemoteDescription
  *   ← ice → addIceCandidate
- *   channel.onopen → connected; channel.onmessage → onEcho
+ *   channel.onopen → connected
  */
 export function connectSession(
   serverUrl: string,
@@ -89,7 +116,7 @@ export function connectSession(
   deviceId: string,
   callbacks: SessionCallbacks = {},
 ): Session {
-  const { onEcho, onState, onError } = callbacks;
+  const { onState, onError } = callbacks;
 
   let pc: RTCPeerConnection | null = null;
   let channel: RTCDataChannel | null = null;
@@ -178,12 +205,9 @@ export function connectSession(
       }
     };
 
-    channel = pc.createDataChannel("echo");
+    channel = pc.createDataChannel("input");
     channel.onopen = () => {
       setState("connected");
-    };
-    channel.onmessage = (e) => {
-      onEcho?.(typeof e.data === "string" ? e.data : String(e.data));
     };
     channel.onclose = () => {
       if (!closed) setState("closed");
@@ -253,9 +277,9 @@ export function connectSession(
   };
 
   return {
-    send(text: string) {
+    sendInput(ev: InputEvent) {
       if (channel && channel.readyState === "open") {
-        channel.send(text);
+        channel.send(JSON.stringify(ev));
       }
     },
     close,
