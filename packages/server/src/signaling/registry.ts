@@ -16,10 +16,23 @@ export class Registry {
   isOnline(deviceId: string): boolean { return this.agents.has(deviceId); }
   getAgent(deviceId: string): Conn | undefined { return this.agents.get(deviceId); }
 
-  remove(conn: Conn): void {
+  /** Remove a connection: drop its agent mapping and any sessions it was part
+   *  of, returning the surviving peer of each removed session so callers can
+   *  notify them (peer-left). */
+  remove(conn: Conn): { sessionId: string; peer: Conn }[] {
     const deviceId = this.agentByConn.get(conn);
-    if (deviceId) { this.agents.delete(deviceId); this.agentByConn.delete(conn); }
-    for (const [sid, s] of this.sessions) if (s.web === conn || s.agent === conn) this.sessions.delete(sid);
+    if (deviceId) {
+      this.agents.delete(deviceId);
+      this.agentByConn.delete(conn);
+    }
+    const affected: { sessionId: string; peer: Conn }[] = [];
+    for (const [sid, s] of this.sessions) {
+      if (s.web === conn || s.agent === conn) {
+        affected.push({ sessionId: sid, peer: s.web === conn ? s.agent : s.web });
+        this.sessions.delete(sid);
+      }
+    }
+    return affected;
   }
 
   createSession(web: Conn, agent: Conn): string {

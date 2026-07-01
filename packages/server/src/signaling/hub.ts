@@ -60,6 +60,14 @@ export function attachSignaling(wss: WebSocketServer, deps: HubDeps) {
         }
       }
     });
-    ws.on("close", () => registry.remove(conn));
+    ws.on("close", () => {
+      for (const { sessionId, peer } of registry.remove(conn)) {
+        try {
+          peer.send(JSON.stringify({ type: "peer-left", sessionId }));
+        } catch {
+          /* peer already gone; ignore */
+        }
+      }
+    });
   });
 }
