@@ -118,3 +118,47 @@ test("unauthenticated web (no token) cannot connect", async () => {
 
   agent.close(); web.close(); teardown();
 });
+
+test("agent WS close notifies web with peer-left", async () => {
+  const { users, devices, port, teardown } = await startHub();
+  const u = users.create("a@b.com", "h");
+  const dev = devices.create(u.id, "PC");
+  const jwt = signToken(u.id, JWT_SECRET);
+
+  const agent = await openWs(`ws://localhost:${port}`);
+  agent.send(JSON.stringify({ type: "agent-online", token: dev.token }));
+  await new Promise((r) => setTimeout(r, 50));
+
+  const web = await openWs(`ws://localhost:${port}?token=${jwt}`);
+  web.send(JSON.stringify({ type: "connect", deviceId: dev.id }));
+  await waitMsg(web); // session-ready
+
+  const left = waitMsg(web); // arm listener before closing
+  agent.close();
+  const msg = await left;
+  expect(msg.type).toBe("peer-left");
+  expect(typeof msg.sessionId).toBe("string");
+  teardown();
+});
+
+test("web WS close notifies agent with peer-left", async () => {
+  const { users, devices, port, teardown } = await startHub();
+  const u = users.create("a@b.com", "h");
+  const dev = devices.create(u.id, "PC");
+  const jwt = signToken(u.id, JWT_SECRET);
+
+  const agent = await openWs(`ws://localhost:${port}`);
+  agent.send(JSON.stringify({ type: "agent-online", token: dev.token }));
+  await new Promise((r) => setTimeout(r, 50));
+
+  const web = await openWs(`ws://localhost:${port}?token=${jwt}`);
+  web.send(JSON.stringify({ type: "connect", deviceId: dev.id }));
+  await waitMsg(agent); // incoming
+  await waitMsg(web); // session-ready
+
+  const left = waitMsg(agent); // arm listener before closing
+  web.close();
+  const msg = await left;
+  expect(msg.type).toBe("peer-left");
+  teardown();
+});
