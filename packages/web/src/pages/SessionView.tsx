@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Device, InputEvent } from "@rd/protocol";
 import { API_BASE } from "../api.js";
 import {
@@ -81,11 +81,25 @@ export function SessionView({ token, device, onExit }: SessionViewProps) {
   }, [token, device.id]);
 
   const connected = state === "connected";
+  const connectedRef = useRef(false);
+  connectedRef.current = connected;
 
-  function emit(ev: InputEvent) {
+  const emit = useCallback((ev: InputEvent) => {
     sessionRef.current?.sendInput(ev);
     setLog((prev) => [describe(ev), ...prev].slice(0, 20));
-  }
+  }, []);
+
+  useEffect(() => {
+    const el = surfaceRef.current;
+    if (!el) return;
+    const onWheelNative = (e: WheelEvent) => {
+      if (!connectedRef.current) return;
+      e.preventDefault();
+      emit({ t: "wheel", dx: e.deltaX, dy: e.deltaY });
+    };
+    el.addEventListener("wheel", onWheelNative, { passive: false });
+    return () => el.removeEventListener("wheel", onWheelNative);
+  }, [emit]);
 
   function onMouseMove(e: React.MouseEvent) {
     if (!connected || !surfaceRef.current) return;
@@ -111,11 +125,6 @@ export function SessionView({ token, device, onExit }: SessionViewProps) {
     if (!connected) return;
     const button = mouseButtonName(e.button);
     if (button) emit({ t: "mup", button });
-  }
-
-  function onWheel(e: React.WheelEvent) {
-    if (!connected) return;
-    emit({ t: "wheel", dx: e.deltaX, dy: e.deltaY });
   }
 
   function onKeyDown(e: React.KeyboardEvent) {
@@ -165,7 +174,6 @@ export function SessionView({ token, device, onExit }: SessionViewProps) {
         onMouseMove={onMouseMove}
         onMouseDown={onMouseDown}
         onMouseUp={onMouseUp}
-        onWheel={onWheel}
         onKeyDown={onKeyDown}
         onKeyUp={onKeyUp}
         onContextMenu={(e) => e.preventDefault()}
