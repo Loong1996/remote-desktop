@@ -20,6 +20,30 @@ pub fn check_input_permission() -> bool {
     }
 }
 
+/// Check whether the process can capture the screen on macOS, logging guidance
+/// if not. Elsewhere it's a no-op returning true. MVP heuristic: on macOS,
+/// SCShareableContent::get() succeeds only when Screen Recording is authorized.
+pub fn check_screen_recording_permission() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        match screencapturekit::shareable_content::SCShareableContent::get() {
+            Ok(_) => true,
+            Err(_) => {
+                tracing::warn!(
+                    "macOS Screen Recording permission not granted — the remote screen \
+                     will be blank. Approve this program under System Settings → Privacy & \
+                     Security → Screen Recording, then restart it."
+                );
+                false
+            }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

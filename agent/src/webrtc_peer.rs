@@ -1,5 +1,8 @@
 use crate::input::{InputEvent, InputInjector};
 use crate::protocol::IceServer;
+use crate::video::openh264_encoder::Openh264Encoder;
+use crate::video::pipeline::VideoPipeline;
+use crate::video::{make_source, EncodedSample, SampleSink};
 use anyhow::Result;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
@@ -13,9 +16,12 @@ use webrtc::data_channel::RTCDataChannel;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::interceptor::registry::Registry;
+use webrtc::media::Sample;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
+use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
+use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSample;
 
 /// Buffers remote ICE candidates that arrive before the remote description is
 /// set. `accept` returns `Some(c)` when the candidate can be added immediately,
@@ -48,6 +54,25 @@ pub struct PeerSession {
     pc: Arc<RTCPeerConnection>,
     ice_buffer: Mutex<IceBuffer<RTCIceCandidateInit>>,
     _injector: Option<InputInjector>,
+    _video: Option<VideoPipeline>,
+}
+
+/// SampleSink that forwards encoded H.264 to a WebRTC track. `write_sample` is
+/// async, so we block on it via the runtime handle captured at construction.
+struct TrackSampleSink {
+    track: Arc<TrackLocalStaticSample>,
+    handle: tokio::runtime::Handle,
+}
+impl SampleSink for TrackSampleSink {
+    fn write(&self, sample: EncodedSample) {
+        let track = self.track.clone();
+        let s = Sample { data: sample.data.into(), duration: sample.duration, ..Default::default() };
+        // block_on is safe here: this runs on the pipeline's own OS thread,
+        // never on a runtime worker.
+        if let Err(e) = self.handle.block_on(track.write_sample(&s)) {
+            tracing::warn!("write_sample failed: {e}");
+        }
+    }
 }
 
 fn to_rtc_ice(servers: Vec<IceServer>) -> Vec<RTCIceServer> {
@@ -167,16 +192,52 @@ impl PeerSession {
 
         // agent is the answerer: the remote side creates the data channel;
         // we pick it up here in on_data_channel and wire input forwarding.
+        let dc_input_tx = input_tx.clone();
         pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
-            let input_tx = input_tx.clone();
+            let input_tx = dc_input_tx.clone();
             wire_input(dc, input_tx);
             Box::pin(async {})
         }));
 
+        // Video: start the capture→encode pipeline and add a sendonly H264 track.
+        let (dst_w, dst_h, fps) = (1280u32, 720u32, 30u32);
+        // Build the encoder BEFORE adding the track. If init fails we add NO
+        // video track, so the remote negotiates input-only rather than a
+        // sendonly video m-line that is never fed (black screen).
+        let encoder: Box<dyn crate::video::VideoEncoder> =
+            match Openh264Encoder::new(dst_w, dst_h, 3_000_000, fps as f32) {
+                Ok(e) => Box::new(e),
+                Err(e) => {
+                    tracing::error!("H264 encoder init failed, video disabled: {e}");
+                    // still return a session (input-only) — mirror the injector-fail path
+                    return Self::finish(pc, input_tx, None);
+                }
+            };
+        let video_track = Arc::new(TrackLocalStaticSample::new(
+            RTCRtpCodecCapability { mime_type: "video/H264".to_owned(), clock_rate: 90000, ..Default::default() },
+            "video".to_owned(),
+            "rd-agent".to_owned(),
+        ));
+        pc.add_track(video_track.clone()).await?;
+        let sink: Arc<dyn SampleSink> = Arc::new(TrackSampleSink {
+            track: video_track,
+            handle: tokio::runtime::Handle::current(),
+        });
+        let capturer = make_source(dst_w, dst_h, fps);
+        let video = VideoPipeline::start(capturer, encoder, sink, dst_w as usize, dst_h as usize, 60);
+        Self::finish(pc, input_tx, Some(video))
+    }
+
+    fn finish(
+        pc: Arc<RTCPeerConnection>,
+        _input_tx: Sender<InputEvent>,
+        video: Option<VideoPipeline>,
+    ) -> Result<PeerSession> {
         Ok(PeerSession {
             pc,
             ice_buffer: Mutex::new(IceBuffer::new()),
             _injector: None,
+            _video: video,
         })
     }
 
@@ -216,6 +277,18 @@ impl PeerSession {
     pub async fn close(&self) -> Result<()> {
         self.pc.close().await?;
         Ok(())
+    }
+
+    /// Number of RTP senders that currently have a local track attached — i.e.
+    /// how many media tracks the agent actually added (0 without `add_track`).
+    pub async fn video_sender_count(&self) -> usize {
+        let mut n = 0;
+        for s in self.pc.get_senders().await {
+            if s.track().await.is_some() {
+                n += 1;
+            }
+        }
+        n
     }
 }
 
