@@ -1,0 +1,64 @@
+name: CI
+
+# Builds and tests the whole project on macOS, Linux, and Windows. This is the
+# cross-platform validation harness: the shared Rust agent + TS packages must
+# compile and pass tests on all three OSes before any platform-specific
+# capture/encode/input backend can be trusted. Windows/Linux capture backends
+# are not implemented yet (the agent falls back to the test-pattern source off
+# macOS) — this CI proves the shared code cross-compiles and is where those
+# backends will be validated as they land.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # Node/TS: protocol + server + web. Fast; runs on all three OSes.
+  node:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Unit tests (vitest)
+        run: npm test
+      - name: Typecheck (protocol + server)
+        run: npm run typecheck
+      - name: Build web
+        run: npm run -w @rd/web build
+
+  # Rust agent. Slower (first build compiles webrtc-rs + openh264 from source).
+  # Native deps: nasm for openh264's source build; libxdo for enigo on Linux.
+  agent:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install nasm (openh264 source build)
+        uses: ilammy/setup-nasm@v1
+      - name: Install Linux native deps (enigo/xdo)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libxdo-dev
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: agent
+      - name: Test (skips #[ignore] real-hardware tests)
+        run: cargo test --manifest-path agent/Cargo.toml
+      - name: Clippy (deny warnings)
+        run: cargo clippy --manifest-path agent/Cargo.toml --all-targets -- -D warnings
