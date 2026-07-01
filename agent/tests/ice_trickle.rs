@@ -16,7 +16,7 @@ use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 // other's candidates in via add_remote_ice / add_ice_candidate. Connectivity
 // only succeeds if trickle works in both directions.
 #[tokio::test]
-async fn agent_trickles_ice_and_echoes() {
+async fn agent_trickles_ice_and_forwards_input() {
     // agent side (under test): local candidates come out on agent_ice_rx.
     let (agent_ice_tx, mut agent_ice_rx) = mpsc::unbounded_channel::<serde_json::Value>();
     let (input_tx, input_rx) = std::sync::mpsc::channel::<rd_agent::input::InputEvent>();
