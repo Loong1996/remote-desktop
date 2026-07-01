@@ -22,6 +22,9 @@ fn resize_bgra(frame: &Frame, dst_w: usize, dst_h: usize) -> Vec<u8> {
 
 /// Convert a BGRA frame to I420, resizing to `dst_w`×`dst_h` first if needed.
 pub fn bgra_to_i420(frame: &Frame, dst_w: usize, dst_h: usize) -> I420 {
+    if dst_w == 0 || dst_h == 0 {
+        return I420 { width: 0, height: 0, y: Vec::new(), u: Vec::new(), v: Vec::new(), y_stride: 0, uv_stride: 0 };
+    }
     let bgra = resize_bgra(frame, dst_w, dst_h);
     let mut planar = YuvPlanarImageMut::<u8>::alloc(dst_w as u32, dst_h as u32, yuv::YuvChromaSubsampling::Yuv420);
     bgra_to_yuv420(
@@ -81,5 +84,30 @@ mod tests {
     fn resizes_to_target() {
         let i = bgra_to_i420(&solid_bgra(32, 32, 0, 0, 0), 16, 16);
         assert_eq!((i.width, i.height), (16, 16));
+    }
+
+    #[test]
+    fn zero_target_returns_empty_without_panic() {
+        let i = bgra_to_i420(&solid_bgra(16, 16, 0, 0, 0), 0, 0);
+        assert_eq!((i.width, i.height), (0, 0));
+        assert!(i.y.is_empty() && i.u.is_empty() && i.v.is_empty());
+    }
+
+    #[test]
+    fn handles_padded_source_stride() {
+        // Source with row padding: stride > width*4. Fill visible pixels white,
+        // padding black; converting must read via stride and yield high luma.
+        let (w, h) = (16usize, 16usize);
+        let stride = w * 4 + 32; // padded
+        let mut data = vec![0u8; stride * h];
+        for y in 0..h {
+            for x in 0..w {
+                let i = y * stride + x * 4;
+                data[i] = 255; data[i + 1] = 255; data[i + 2] = 255; data[i + 3] = 255;
+            }
+        }
+        let frame = Frame { width: w as u32, height: h as u32, stride, data, ts_micros: 0 };
+        let out = bgra_to_i420(&frame, w, h);
+        assert!(out.y[0] > 200, "white luma {} too low — stride mishandled", out.y[0]);
     }
 }
