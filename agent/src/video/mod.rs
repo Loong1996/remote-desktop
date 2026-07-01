@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 pub mod convert;
+pub mod openh264_encoder;
 pub mod testpattern;
 
 /// One captured frame of raw BGRA8888 pixels. `stride` is bytes per row
