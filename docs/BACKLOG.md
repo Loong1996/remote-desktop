@@ -77,5 +77,5 @@ Reuse the SAME data channel that Plan 2b opened. The `InputEvent` type is alread
 - **Test before commit:** every step must pass its tests before it is committed.
 - **Keep planning in-repo:** design docs, plans, progress live under `docs/` in this repo.
 - **Brainstorm → write spec → write plan → execute** (superpowers skills). Each plan produces independently testable software.
-- **Subagent-driven execution:** fresh subagent per task + independent review per task + a final whole-branch review; use Opus 4.8 for subagents; **parallelize independent tasks** (disjoint dirs → dispatch concurrently; controller commits each separately to avoid git index races).
+- **Subagent-driven execution:** fresh subagent per task + independent review per task + a final whole-branch review; **parallelize independent tasks** (disjoint dirs → dispatch concurrently; controller commits each separately to avoid git index races).
 - Commit messages in English, ending with the Co-Authored-By trailer.
