@@ -633,8 +633,12 @@ impl VideoPipeline {
             // hold capturer alive for the life of the thread
             let _capturer = capturer;
             loop {
-                if stop_rx.try_recv().is_ok() {
-                    break;
+                // Stop when the VideoPipeline is dropped: its `_stop` Sender
+                // drops, so try_recv() returns Disconnected (NOT Empty). Break on
+                // anything that isn't Empty. (`.is_ok()` would miss Disconnected.)
+                match stop_rx.try_recv() {
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                    _ => break,
                 }
                 let frame = match frame_rx.recv_timeout(std::time::Duration::from_millis(200)) {
                     Ok(f) => f,
@@ -720,6 +724,11 @@ async fn agent_answer_includes_video_when_offer_requests_it() {
     // agent sends video → its m-line is sendonly (or sendrecv)
     assert!(answer_sdp.contains("a=sendonly") || answer_sdp.contains("a=sendrecv"),
         "video not sendable in answer:\n{answer_sdp}");
+    // the agent's H264 track must be negotiated: the answer advertises an H264
+    // rtpmap (e.g. `a=rtpmap:96 H264/90000`). This is the cheap first-line gate
+    // that the video track/codec is actually offered; full RTP-flow delivery is
+    // covered by the manual smoke (Task 8).
+    assert!(answer_sdp.contains("H264"), "answer video has no H264 rtpmap:\n{answer_sdp}");
 
     let _ = RTCSessionDescription::answer(answer_sdp).unwrap();
     agent.close().await.unwrap();
