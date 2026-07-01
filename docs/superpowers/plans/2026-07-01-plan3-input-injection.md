@@ -723,13 +723,12 @@ Create `agent/src/permission.rs`:
 ```rust
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn check_returns_true_off_macos() {
         // Off macOS the check is a no-op that must report available.
+        // (No `use super::*` — on macOS that glob is unused and clippy warns.)
         #[cfg(not(target_os = "macos"))]
-        assert!(check_input_permission());
+        assert!(super::check_input_permission());
         // On macOS, do NOT call check_input_permission() here — it uses the
         // *prompting* Accessibility API and would surface a system dialog during
         // `cargo test` / CI. Verify the underlying non-prompting trust query is
