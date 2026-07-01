@@ -73,6 +73,15 @@ export function mouseButtonName(button: number): MouseButton | null {
   }
 }
 
+/** Resolve the MediaStream for an incoming track: prefer the negotiated
+ *  stream, else build one from the track. `mk` is injectable for testing. */
+export function streamFromTrackEvent(
+  ev: RTCTrackEvent,
+  mk: (t: MediaStreamTrack) => MediaStream = (t) => new MediaStream([t]),
+): MediaStream {
+  return ev.streams[0] ?? mk(ev.track);
+}
+
 // ---------------------------------------------------------------------------
 // Live session orchestration (browser WebRTC + WebSocket).
 // ---------------------------------------------------------------------------
@@ -89,6 +98,8 @@ export interface SessionCallbacks {
   onState?: (state: ConnectionState) => void;
   /** Called on any fatal error (WS error, signaling error message, etc.). */
   onError?: (message: string) => void;
+  /** Called when the remote peer's video track arrives. */
+  onRemoteStream?: (stream: MediaStream) => void;
 }
 
 export interface Session {
@@ -116,7 +127,7 @@ export function connectSession(
   deviceId: string,
   callbacks: SessionCallbacks = {},
 ): Session {
-  const { onState, onError } = callbacks;
+  const { onState, onError, onRemoteStream } = callbacks;
 
   let pc: RTCPeerConnection | null = null;
   let channel: RTCDataChannel | null = null;
@@ -203,6 +214,11 @@ export function connectSession(
       if (pc.connectionState === "failed") {
         fail("peer connection failed");
       }
+    };
+
+    pc.addTransceiver("video", { direction: "recvonly" });
+    pc.ontrack = (ev) => {
+      onRemoteStream?.(streamFromTrackEvent(ev));
     };
 
     channel = pc.createDataChannel("input");

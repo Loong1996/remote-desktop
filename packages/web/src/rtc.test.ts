@@ -7,6 +7,7 @@ import {
   buildIce,
   mouseCoords,
   mouseButtonName,
+  streamFromTrackEvent,
 } from "./rtc.js";
 
 describe("deriveWsUrl", () => {
@@ -85,4 +86,17 @@ test("encoded events pass the protocol validator", () => {
     t: "mdown",
     button: "left",
   });
+});
+
+test("streamFromTrackEvent prefers event.streams[0]", () => {
+  const stream = { id: "s1" } as unknown as MediaStream;
+  const ev = { streams: [stream], track: { kind: "video" } } as unknown as RTCTrackEvent;
+  expect(streamFromTrackEvent(ev)).toBe(stream);
+});
+
+test("streamFromTrackEvent falls back to a new stream from the track", () => {
+  const track = { kind: "video" } as unknown as MediaStreamTrack;
+  const ev = { streams: [], track } as unknown as RTCTrackEvent;
+  const s = streamFromTrackEvent(ev, (t) => ({ tracks: [t] }) as unknown as MediaStream);
+  expect((s as unknown as { tracks: MediaStreamTrack[] }).tracks[0]).toBe(track);
 });
