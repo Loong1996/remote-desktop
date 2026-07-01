@@ -1,5 +1,7 @@
+use crate::input::{InputEvent, InputInjector};
 use crate::protocol::IceServer;
 use anyhow::Result;
+use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::sync::Mutex;
 use tokio::sync::mpsc::UnboundedSender;
@@ -45,6 +47,7 @@ impl<T> IceBuffer<T> {
 pub struct PeerSession {
     pc: Arc<RTCPeerConnection>,
     ice_buffer: Mutex<IceBuffer<RTCIceCandidateInit>>,
+    _injector: Option<InputInjector>,
 }
 
 fn to_rtc_ice(servers: Vec<IceServer>) -> Vec<RTCIceServer> {
@@ -69,20 +72,29 @@ fn to_rtc_ice(servers: Vec<IceServer>) -> Vec<RTCIceServer> {
         .collect()
 }
 
-fn wire_echo(dc: Arc<RTCDataChannel>) {
-    let dc_for_msg = dc.clone();
+fn wire_input(dc: Arc<RTCDataChannel>, input_tx: Sender<InputEvent>) {
     dc.on_message(Box::new(move |msg: DataChannelMessage| {
-        let dc = dc_for_msg.clone();
+        let input_tx = input_tx.clone();
         Box::pin(async move {
-            if let Ok(text) = String::from_utf8(msg.data.to_vec()) {
-                let _ = dc.send_text(format!("echo:{text}")).await;
+            let text = match String::from_utf8(msg.data.to_vec()) {
+                Ok(t) => t,
+                Err(_) => {
+                    tracing::warn!("dropping non-utf8 input frame");
+                    return;
+                }
+            };
+            match serde_json::from_str::<InputEvent>(&text) {
+                Ok(ev) => {
+                    let _ = input_tx.send(ev);
+                }
+                Err(e) => tracing::warn!("dropping malformed input event: {e}"),
             }
         })
     }));
 }
 
 impl PeerSession {
-    /// Construct an answerer peer session.
+    /// Production constructor: owns a real enigo-backed injector.
     ///
     /// `local_ice_tx` receives each locally-gathered ICE candidate (serialized
     /// from `RTCIceCandidateInit` to a `serde_json::Value`) as it is
@@ -92,6 +104,28 @@ impl PeerSession {
     pub async fn new(
         ice_servers: Vec<IceServer>,
         local_ice_tx: UnboundedSender<serde_json::Value>,
+    ) -> Result<PeerSession> {
+        let injector = InputInjector::start();
+        let tx = injector.sender();
+        let mut session = Self::build(ice_servers, local_ice_tx, tx).await?;
+        session._injector = Some(injector);
+        Ok(session)
+    }
+
+    /// Test seam: forward parsed input events to a caller-provided sink instead
+    /// of a real injector (no display/permission needed).
+    pub async fn new_with_input_sink(
+        ice_servers: Vec<IceServer>,
+        local_ice_tx: UnboundedSender<serde_json::Value>,
+        input_tx: Sender<InputEvent>,
+    ) -> Result<PeerSession> {
+        Self::build(ice_servers, local_ice_tx, input_tx).await
+    }
+
+    async fn build(
+        ice_servers: Vec<IceServer>,
+        local_ice_tx: UnboundedSender<serde_json::Value>,
+        input_tx: Sender<InputEvent>,
     ) -> Result<PeerSession> {
         let mut m = MediaEngine::default();
         m.register_default_codecs()?;
@@ -132,13 +166,18 @@ impl PeerSession {
         }));
 
         // agent is the answerer: the remote side creates the data channel;
-        // we pick it up here in on_data_channel and wire the echo behavior.
+        // we pick it up here in on_data_channel and wire input forwarding.
         pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
-            wire_echo(dc);
+            let input_tx = input_tx.clone();
+            wire_input(dc, input_tx);
             Box::pin(async {})
         }));
 
-        Ok(PeerSession { pc, ice_buffer: Mutex::new(IceBuffer::new()) })
+        Ok(PeerSession {
+            pc,
+            ice_buffer: Mutex::new(IceBuffer::new()),
+            _injector: None,
+        })
     }
 
     /// Handle a remote offer and return the local answer SDP. Waits for ICE
