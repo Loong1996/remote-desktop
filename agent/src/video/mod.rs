@@ -2,7 +2,15 @@ use std::time::Duration;
 
 pub mod convert;
 pub mod openh264_encoder;
+pub mod pipeline;
 pub mod testpattern;
+
+/// Select the capture source. Until the SckCapturer lands (Task 5) this is
+/// always the test pattern; afterwards `RD_VIDEO_SOURCE=screen` (the default)
+/// selects real capture and `testpattern` forces the synthetic source.
+pub fn make_source(w: u32, h: u32, fps: u32) -> Box<dyn ScreenCapturer> {
+    Box::new(testpattern::TestPatternSource { width: w, height: h, fps })
+}
 
 /// One captured frame of raw BGRA8888 pixels. `stride` is bytes per row
 /// (>= width*4) to allow row padding from the capture source.
