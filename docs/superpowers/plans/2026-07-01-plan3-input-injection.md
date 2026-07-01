@@ -515,6 +515,9 @@ pub fn code_to_key(code: &str) -> Option<Key> {
         "End" => Some(Key::End),
         "PageUp" => Some(Key::PageUp),
         "PageDown" => Some(Key::PageDown),
+        // enigo's Key::Insert only exists on Windows / non-macOS Unix in 0.6.1;
+        // macOS keyboards have no Insert key, so it falls through to None there.
+        #[cfg(any(target_os = "windows", all(unix, not(target_os = "macos"))))]
         "Insert" => Some(Key::Insert),
         _ => None,
     }

@@ -77,7 +77,7 @@ pub enum InputEvent {
 - 功能键 `F1`..`F12` → `Key::F1`..`F12`。
 - 方向键 `ArrowUp/Down/Left/Right` → `Key::UpArrow/DownArrow/LeftArrow/RightArrow`。
 - 修饰键 `ShiftLeft/ShiftRight` → `Key::Shift`；`ControlLeft/Right` → `Key::Control`；`AltLeft/Right` → `Key::Alt`；`MetaLeft/Right` → `Key::Meta`（macOS 上即 Command）。左右不区分（enigo 抽象层不保证区分，MVP 不需要）。
-- 编辑/导航：`Enter`→`Return`、`Tab`→`Tab`、`Escape`→`Escape`、`Backspace`→`Backspace`、`Delete`→`Delete`、`Space`→`Space`、`Home/End/PageUp/PageDown/Insert`→ 对应 `Key::*`、`CapsLock`→`CapsLock`。
+- 编辑/导航：`Enter`→`Return`、`Tab`→`Tab`、`Escape`→`Escape`、`Backspace`→`Backspace`、`Delete`→`Delete`、`Space`→`Space`、`Home/End/PageUp/PageDown`→ 对应 `Key::*`、`CapsLock`→`CapsLock`。`Insert` 仅在 Windows/非-macOS Unix 上映射（enigo 0.6.1 的 `Key::Insert` 在 macOS 不存在，故 macOS 上 `Insert` 落到 `None`，Mac 键盘本无此键）。
 - 小键盘 `Numpad0`..`Numpad9` → 对应数字 `Key::Unicode`（MVP 简化，不区分小键盘语义）。
 - 未收录的 `code` → `None`，记 `tracing::warn!` 跳过（不崩、不猜）。
 - **修饰键组合**（如 `Cmd+C`、`Shift+A`）**无需特殊处理**：控制端忠实地按序发 `kdown ShiftLeft` → `kdown KeyA` → `kup KeyA` → `kup ShiftLeft`，Agent 忠实重放 Press/Release，组合在系统层自然生效。
