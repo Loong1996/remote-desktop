@@ -1,0 +1,92 @@
+use rd_agent::webrtc_peer::PeerSession;
+use std::sync::Arc;
+use tokio::sync::mpsc;
+use webrtc::api::APIBuilder;
+use webrtc::data_channel::data_channel_message::DataChannelMessage;
+use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
+use webrtc::peer_connection::configuration::RTCConfiguration;
+use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
+
+// Pure bidirectional trickle-ICE loopback.
+//
+// The agent (PeerSession, the answerer) and a "web side" PeerConnection built
+// here exchange ONLY the SDP offer/answer up front (no gathering wait), then
+// relay ICE candidates to each other as they are discovered. The agent emits
+// its local candidates through the mpsc sender passed to PeerSession::new; the
+// web side emits its candidates through on_ice_candidate. Each side feeds the
+// other's candidates in via add_remote_ice / add_ice_candidate. Connectivity
+// only succeeds if trickle works in both directions.
+#[tokio::test]
+async fn agent_trickles_ice_and_echoes() {
+    // agent side (under test): local candidates come out on agent_ice_rx.
+    let (agent_ice_tx, mut agent_ice_rx) = mpsc::unbounded_channel::<serde_json::Value>();
+    let agent = Arc::new(PeerSession::new(vec![], agent_ice_tx).await.unwrap());
+
+    // web side (built here in the test).
+    let api = APIBuilder::new().build();
+    let web = Arc::new(
+        api.new_peer_connection(RTCConfiguration::default())
+            .await
+            .unwrap(),
+    );
+
+    // web -> agent candidate relay.
+    let agent_for_ice = agent.clone();
+    web.on_ice_candidate(Box::new(move |c| {
+        let agent = agent_for_ice.clone();
+        Box::pin(async move {
+            if let Some(c) = c {
+                if let Ok(init) = c.to_json() {
+                    if let Ok(v) = serde_json::to_value(init) {
+                        let _ = agent.add_remote_ice(v).await;
+                    }
+                }
+            }
+        })
+    }));
+
+    // agent -> web candidate relay (drain agent_ice_rx in a task).
+    let web_for_ice = web.clone();
+    tokio::spawn(async move {
+        while let Some(v) = agent_ice_rx.recv().await {
+            if let Ok(init) = serde_json::from_value::<RTCIceCandidateInit>(v) {
+                let _ = web_for_ice.add_ice_candidate(init).await;
+            }
+        }
+    });
+
+    let dc = web.create_data_channel("echo", None).await.unwrap();
+
+    let (got_tx, mut got_rx) = mpsc::unbounded_channel::<String>();
+    dc.on_message(Box::new(move |msg: DataChannelMessage| {
+        let s = String::from_utf8(msg.data.to_vec()).unwrap();
+        let _ = got_tx.send(s);
+        Box::pin(async {})
+    }));
+
+    let dc2 = dc.clone();
+    dc.on_open(Box::new(move || {
+        let dc3 = dc2.clone();
+        Box::pin(async move {
+            let _ = dc3.send_text("hello".to_string()).await;
+        })
+    }));
+
+    // Trickle handshake: exchange SDP WITHOUT waiting for gathering.
+    let offer = web.create_offer(None).await.unwrap();
+    web.set_local_description(offer.clone()).await.unwrap();
+
+    let answer_sdp = agent.accept_offer(&offer.sdp).await.unwrap();
+    let answer = RTCSessionDescription::answer(answer_sdp).unwrap();
+    web.set_remote_description(answer).await.unwrap();
+
+    // expect to receive echo:hello (timeout guards against hangs)
+    let got = tokio::time::timeout(std::time::Duration::from_secs(15), got_rx.recv())
+        .await
+        .expect("timed out waiting for echo")
+        .unwrap();
+    assert_eq!(got, "echo:hello");
+
+    agent.close().await.unwrap();
+    web.close().await.unwrap();
+}

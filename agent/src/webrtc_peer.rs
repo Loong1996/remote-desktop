@@ -1,6 +1,7 @@
 use crate::protocol::IceServer;
 use anyhow::Result;
 use std::sync::Arc;
+use tokio::sync::mpsc::UnboundedSender;
 use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::MediaEngine;
 use webrtc::api::APIBuilder;
@@ -52,7 +53,17 @@ fn wire_echo(dc: Arc<RTCDataChannel>) {
 }
 
 impl PeerSession {
-    pub async fn new(ice_servers: Vec<IceServer>) -> Result<PeerSession> {
+    /// Construct an answerer peer session.
+    ///
+    /// `local_ice_tx` receives each locally-gathered ICE candidate (serialized
+    /// from `RTCIceCandidateInit` to a `serde_json::Value`) as it is
+    /// discovered, so the signaling loop can trickle them to the remote peer.
+    /// The final `None` candidate emitted by webrtc-rs (gathering complete) is
+    /// skipped.
+    pub async fn new(
+        ice_servers: Vec<IceServer>,
+        local_ice_tx: UnboundedSender<serde_json::Value>,
+    ) -> Result<PeerSession> {
         let mut m = MediaEngine::default();
         m.register_default_codecs()?;
         let mut registry = Registry::new();
@@ -67,6 +78,29 @@ impl PeerSession {
             ..Default::default()
         };
         let pc = Arc::new(api.new_peer_connection(config).await?);
+
+        // Emit each local ICE candidate through the sink so the signaling loop
+        // can trickle it to the remote peer.
+        pc.on_ice_candidate(Box::new(move |c| {
+            let tx = local_ice_tx.clone();
+            Box::pin(async move {
+                if let Some(c) = c {
+                    match c.to_json() {
+                        Ok(init) => match serde_json::to_value(init) {
+                            Ok(v) => {
+                                let _ = tx.send(v);
+                            }
+                            Err(e) => {
+                                tracing::warn!("failed to serialize local ice candidate: {e}");
+                            }
+                        },
+                        Err(e) => {
+                            tracing::warn!("failed to convert local ice candidate to json: {e}");
+                        }
+                    }
+                }
+            })
+        }));
 
         // agent is the answerer: the remote side creates the data channel;
         // we pick it up here in on_data_channel and wire the echo behavior.

@@ -13,8 +13,11 @@ use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 // candidate relay is needed.
 #[tokio::test]
 async fn agent_echoes_data_channel_messages() {
-    // agent side (under test)
-    let agent = PeerSession::new(vec![]).await.unwrap();
+    // agent side (under test). This test uses non-trickle gathering, so the
+    // local candidate sink is not exercised here; a dedicated trickle test
+    // (tests/ice_trickle.rs) covers candidate emission and relay.
+    let (agent_ice_tx, _agent_ice_rx) = mpsc::unbounded_channel::<serde_json::Value>();
+    let agent = PeerSession::new(vec![], agent_ice_tx).await.unwrap();
 
     // web side (built here in the test)
     let api = APIBuilder::new().build();

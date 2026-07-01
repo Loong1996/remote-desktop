@@ -3,6 +3,7 @@ use crate::protocol::{SdpDesc, SignalingMessage};
 use crate::webrtc_peer::PeerSession;
 use anyhow::Result;
 use futures_util::{SinkExt, StreamExt};
+use tokio::sync::mpsc;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 
@@ -30,70 +31,116 @@ pub async fn run_agent(config: AgentConfig) -> Result<()> {
 
     let mut current: Option<(String, PeerSession)> = None;
 
-    while let Some(item) = read.next().await {
-        let msg = match item {
-            Ok(Message::Text(t)) => t,
-            Ok(Message::Close(_)) | Err(_) => break,
-            _ => continue,
-        };
-        let parsed: SignalingMessage = match serde_json::from_str(&msg) {
-            Ok(m) => m,
-            Err(e) => {
-                tracing::warn!("bad signaling msg: {e}");
-                continue;
-            }
-        };
-        match parsed {
-            SignalingMessage::Incoming {
-                session_id,
-                ice_servers,
-                ..
-            } => {
-                if current.is_some() {
-                    tracing::info!(
-                        "incoming session {session_id} supersedes existing current session"
-                    );
+    // Channel carrying locally-gathered ICE candidates out of each PeerSession.
+    // A clone of the sender is handed to every PeerSession::new; the receiver is
+    // drained below and each candidate is trickled to the remote peer, tagged
+    // with the current session id.
+    let (ice_tx, mut ice_rx) = mpsc::unbounded_channel::<serde_json::Value>();
+
+    loop {
+        tokio::select! {
+            // Locally-gathered ICE candidate → trickle it to the remote peer.
+            Some(candidate) = ice_rx.recv() => {
+                if let Some((sid, _)) = &current {
+                    let out = SignalingMessage::Ice {
+                        session_id: sid.clone(),
+                        candidate,
+                    };
+                    match serde_json::to_string(&out) {
+                        Ok(txt) => {
+                            if let Err(e) = write.send(Message::Text(txt)).await {
+                                tracing::error!("failed to send local ice candidate: {e}");
+                            }
+                        }
+                        Err(e) => tracing::warn!("failed to serialize local ice candidate: {e}"),
+                    }
                 }
-                let peer = match PeerSession::new(ice_servers).await {
-                    Ok(p) => p,
+            }
+
+            // Inbound signaling message from the server.
+            item = read.next() => {
+                let item = match item {
+                    Some(item) => item,
+                    None => break,
+                };
+                let msg = match item {
+                    Ok(Message::Text(t)) => t,
+                    Ok(Message::Close(_)) | Err(_) => break,
+                    _ => continue,
+                };
+                let parsed: SignalingMessage = match serde_json::from_str(&msg) {
+                    Ok(m) => m,
                     Err(e) => {
-                        tracing::error!("failed to construct peer session for {session_id}: {e}");
+                        tracing::warn!("bad signaling msg: {e}");
                         continue;
                     }
                 };
-                current = Some((session_id, peer));
-                tracing::info!("incoming session accepted, awaiting offer");
-            }
-            SignalingMessage::Sdp { session_id, sdp } if sdp.kind == "offer" => {
-                if let Some((sid, peer)) = &current {
-                    if *sid == session_id {
-                        let answer_sdp = match peer.accept_offer(&sdp.sdp).await {
-                            Ok(a) => a,
+                match parsed {
+                    SignalingMessage::Incoming {
+                        session_id,
+                        ice_servers,
+                        ..
+                    } => {
+                        if current.is_some() {
+                            tracing::info!(
+                                "incoming session {session_id} supersedes existing current session"
+                            );
+                        }
+                        let peer = match PeerSession::new(ice_servers, ice_tx.clone()).await {
+                            Ok(p) => p,
                             Err(e) => {
                                 tracing::error!(
-                                    "failed to accept offer for session {session_id}: {e}"
+                                    "failed to construct peer session for {session_id}: {e}"
                                 );
                                 continue;
                             }
                         };
-                        let reply = serde_json::to_string(&SignalingMessage::Sdp {
-                            session_id,
-                            sdp: SdpDesc {
-                                kind: "answer".into(),
-                                sdp: answer_sdp,
-                            },
-                        })?;
-                        if let Err(e) = write.send(Message::Text(reply)).await {
-                            tracing::error!("failed to send answer: {e}");
-                            continue;
+                        current = Some((session_id, peer));
+                        tracing::info!("incoming session accepted, awaiting offer");
+                    }
+                    SignalingMessage::Sdp { session_id, sdp } if sdp.kind == "offer" => {
+                        if let Some((sid, peer)) = &current {
+                            if *sid == session_id {
+                                let answer_sdp = match peer.accept_offer(&sdp.sdp).await {
+                                    Ok(a) => a,
+                                    Err(e) => {
+                                        tracing::error!(
+                                            "failed to accept offer for session {session_id}: {e}"
+                                        );
+                                        continue;
+                                    }
+                                };
+                                let reply = serde_json::to_string(&SignalingMessage::Sdp {
+                                    session_id,
+                                    sdp: SdpDesc {
+                                        kind: "answer".into(),
+                                        sdp: answer_sdp,
+                                    },
+                                })?;
+                                if let Err(e) = write.send(Message::Text(reply)).await {
+                                    tracing::error!("failed to send answer: {e}");
+                                    continue;
+                                }
+                            }
                         }
                     }
+                    SignalingMessage::Ice { session_id, candidate } => {
+                        if let Some((sid, peer)) = &current {
+                            if *sid == session_id {
+                                if let Err(e) = peer.add_remote_ice(candidate).await {
+                                    tracing::warn!(
+                                        "failed to add remote ice candidate for session {session_id}: {e}"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    SignalingMessage::Error { code, message } => {
+                        tracing::error!("signaling error {code}: {message}");
+                    }
+                    _ => {}
                 }
             }
-            SignalingMessage::Error { code, message } => {
-                tracing::error!("signaling error {code}: {message}");
-            }
-            _ => {}
         }
     }
     Ok(())
