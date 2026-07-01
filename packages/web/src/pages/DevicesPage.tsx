@@ -86,7 +86,7 @@ export function DevicesPage({ token, onSelectDevice, onLogout }: DevicesPageProp
         </button>
         {pairedToken && (
           <div style={{ marginTop: 12 }}>
-            <p>Device token (enter this on the agent to bring it online):</p>
+            <p>Device token (the agent currently pairs via its own interactive login; token-based pairing is planned):</p>
             <code style={{ userSelect: "all", wordBreak: "break-all" }}>{pairedToken}</code>
           </div>
         )}
