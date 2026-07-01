@@ -34,6 +34,11 @@ export function attachSignaling(wss: WebSocketServer, deps: HubDeps) {
           break;
         }
         case "connect": {
+          // 只有已认证的 web 客户端可发起连接
+          if (!webUserId) { conn.send(JSON.stringify({ type: "error", code: "unauthorized", message: "authentication required" })); return; }
+          // 校验目标设备存在且归当前用户所有（未拥有/不存在返回同一错误，避免设备枚举）
+          const device = devices.findById(msg.deviceId);
+          if (!device || device.userId !== webUserId) { conn.send(JSON.stringify({ type: "error", code: "forbidden", message: "device not found or not owned" })); return; }
           const agent = registry.getAgent(msg.deviceId);
           if (!agent) { conn.send(JSON.stringify({ type: "error", code: "offline", message: "device offline" })); return; }
           const sessionId = registry.createSession(conn, agent);
