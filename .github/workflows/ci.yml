@@ -48,9 +48,13 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install nasm (openh264 source build)
         uses: ilammy/setup-nasm@v1
-      - name: Install Linux native deps (enigo/xdo)
+      - name: Install Linux native deps (enigo/xdo + xcap X11/Wayland)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libxdo-dev
+        run: >
+          sudo apt-get update && sudo apt-get install -y
+          libxdo-dev
+          libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libxcb-xfixes0-dev
+          libdbus-1-dev libpipewire-0.3-dev
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:

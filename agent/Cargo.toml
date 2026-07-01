@@ -33,6 +33,10 @@ openh264 = { version = "0.9", features = ["source"] }
 macos-accessibility-client = "0.0.2"
 screencapturekit = "8"
 
+# Screen capture on Windows + Linux (macOS uses ScreenCaptureKit above).
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+xcap = "0.9"
+
 [dev-dependencies]
 wiremock = "0.6"
 tokio-test = "0.4"

@@ -3,6 +3,8 @@ use std::time::Duration;
 pub mod convert;
 pub mod openh264_encoder;
 pub mod pipeline;
+#[cfg(not(target_os = "macos"))]
+pub mod xcap_capturer;
 pub mod testpattern;
 
 #[cfg(target_os = "macos")]
@@ -21,8 +23,8 @@ pub fn make_source(w: u32, h: u32, fps: u32) -> Box<dyn ScreenCapturer> {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        tracing::warn!("no screen capture backend on this platform; using test pattern");
-        Box::new(testpattern::TestPatternSource { width: w, height: h, fps })
+        let _ = (w, h); // xcap captures at the monitor's native size
+        Box::new(xcap_capturer::XcapCapturer::new(fps))
     }
 }
 
