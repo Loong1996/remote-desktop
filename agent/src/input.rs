@@ -1,3 +1,4 @@
+use enigo::{Button, Key};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -25,6 +26,116 @@ pub enum InputEvent {
     KDown { code: String },
     #[serde(rename = "kup")]
     KUp { code: String },
+}
+
+/// Map relative coords (0..1) to absolute pixels on a `w`×`h` display,
+/// clamping both the input range and the result to on-screen pixels.
+pub fn map_coord(x: f64, y: f64, w: i32, h: i32) -> (i32, i32) {
+    let cx = x.clamp(0.0, 1.0);
+    let cy = y.clamp(0.0, 1.0);
+    let px = (cx * w as f64).round() as i32;
+    let py = (cy * h as f64).round() as i32;
+    (px.clamp(0, (w - 1).max(0)), py.clamp(0, (h - 1).max(0)))
+}
+
+/// Convert a browser wheel delta (≈100px per notch, deltaMode 0) into enigo
+/// scroll "clicks" (15° rotations). Any non-zero delta yields at least ±1.
+pub fn pixels_to_clicks(delta: f64) -> i32 {
+    if delta == 0.0 {
+        return 0;
+    }
+    let clicks = (delta / 100.0).round() as i32;
+    if clicks == 0 {
+        if delta > 0.0 { 1 } else { -1 }
+    } else {
+        clicks
+    }
+}
+
+pub fn map_button(b: &MouseButton) -> Button {
+    match b {
+        MouseButton::Left => Button::Left,
+        MouseButton::Right => Button::Right,
+        MouseButton::Middle => Button::Middle,
+    }
+}
+
+/// Map a `KeyboardEvent.code` string to an enigo `Key`. Returns `None` for
+/// codes we don't handle (caller logs and skips). Letters map to lowercase
+/// Unicode; case is produced by a separately-held Shift, matching real keyboards.
+pub fn code_to_key(code: &str) -> Option<Key> {
+    if let Some(rest) = code.strip_prefix("Key") {
+        let mut chars = rest.chars();
+        if let (Some(c), None) = (chars.next(), chars.next()) {
+            if c.is_ascii_alphabetic() {
+                return Some(Key::Unicode(c.to_ascii_lowercase()));
+            }
+        }
+    }
+    if let Some(rest) = code.strip_prefix("Digit").or_else(|| code.strip_prefix("Numpad")) {
+        let mut chars = rest.chars();
+        if let (Some(c), None) = (chars.next(), chars.next()) {
+            if c.is_ascii_digit() {
+                return Some(Key::Unicode(c));
+            }
+        }
+    }
+    if let Some(rest) = code.strip_prefix('F') {
+        if let Ok(n) = rest.parse::<u8>() {
+            return match n {
+                1 => Some(Key::F1),
+                2 => Some(Key::F2),
+                3 => Some(Key::F3),
+                4 => Some(Key::F4),
+                5 => Some(Key::F5),
+                6 => Some(Key::F6),
+                7 => Some(Key::F7),
+                8 => Some(Key::F8),
+                9 => Some(Key::F9),
+                10 => Some(Key::F10),
+                11 => Some(Key::F11),
+                12 => Some(Key::F12),
+                _ => None,
+            };
+        }
+    }
+    match code {
+        "Minus" => Some(Key::Unicode('-')),
+        "Equal" => Some(Key::Unicode('=')),
+        "BracketLeft" => Some(Key::Unicode('[')),
+        "BracketRight" => Some(Key::Unicode(']')),
+        "Backslash" => Some(Key::Unicode('\\')),
+        "Semicolon" => Some(Key::Unicode(';')),
+        "Quote" => Some(Key::Unicode('\'')),
+        "Backquote" => Some(Key::Unicode('`')),
+        "Comma" => Some(Key::Unicode(',')),
+        "Period" => Some(Key::Unicode('.')),
+        "Slash" => Some(Key::Unicode('/')),
+        "Enter" => Some(Key::Return),
+        "Tab" => Some(Key::Tab),
+        "Escape" => Some(Key::Escape),
+        "Backspace" => Some(Key::Backspace),
+        "Delete" => Some(Key::Delete),
+        "Space" => Some(Key::Space),
+        "ArrowUp" => Some(Key::UpArrow),
+        "ArrowDown" => Some(Key::DownArrow),
+        "ArrowLeft" => Some(Key::LeftArrow),
+        "ArrowRight" => Some(Key::RightArrow),
+        "ShiftLeft" | "ShiftRight" => Some(Key::Shift),
+        "ControlLeft" | "ControlRight" => Some(Key::Control),
+        "AltLeft" | "AltRight" => Some(Key::Alt),
+        "MetaLeft" | "MetaRight" => Some(Key::Meta),
+        "CapsLock" => Some(Key::CapsLock),
+        "Home" => Some(Key::Home),
+        "End" => Some(Key::End),
+        "PageUp" => Some(Key::PageUp),
+        "PageDown" => Some(Key::PageDown),
+        // enigo's Key::Insert only exists on Windows / non-macOS Unix in 0.6.1;
+        // macOS keyboards have no Insert key, so it falls through to None there.
+        #[cfg(any(target_os = "windows", all(unix, not(target_os = "macos"))))]
+        "Insert" => Some(Key::Insert),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -59,5 +170,67 @@ mod tests {
         for (json, expected) in cases {
             assert_eq!(serde_json::from_str::<InputEvent>(json).unwrap(), expected);
         }
+    }
+}
+
+#[cfg(test)]
+mod mapper_tests {
+    use super::*;
+    use enigo::{Button, Key};
+
+    #[test]
+    fn map_coord_scales_and_clamps() {
+        assert_eq!(map_coord(0.0, 0.0, 1920, 1080), (0, 0));
+        assert_eq!(map_coord(1.0, 1.0, 1920, 1080), (1919, 1079)); // clamp to w-1/h-1
+        assert_eq!(map_coord(0.5, 0.5, 1920, 1080), (960, 540));
+        assert_eq!(map_coord(1.5, -0.2, 1920, 1080), (1919, 0)); // out-of-range clamped
+    }
+
+    #[test]
+    fn pixels_to_clicks_signs_and_minimum() {
+        assert_eq!(pixels_to_clicks(0.0), 0);
+        assert_eq!(pixels_to_clicks(100.0), 1);
+        assert_eq!(pixels_to_clicks(-100.0), -1);
+        assert_eq!(pixels_to_clicks(30.0), 1);   // small non-zero rounds to ±1, never 0
+        assert_eq!(pixels_to_clicks(-30.0), -1);
+        assert_eq!(pixels_to_clicks(250.0), 3);  // round(2.5)
+    }
+
+    #[test]
+    fn map_button_covers_all() {
+        assert!(matches!(map_button(&MouseButton::Left), Button::Left));
+        assert!(matches!(map_button(&MouseButton::Right), Button::Right));
+        assert!(matches!(map_button(&MouseButton::Middle), Button::Middle));
+    }
+
+    #[test]
+    fn code_to_key_letters_digits_symbols() {
+        assert!(matches!(code_to_key("KeyA"), Some(Key::Unicode('a'))));
+        assert!(matches!(code_to_key("KeyZ"), Some(Key::Unicode('z'))));
+        assert!(matches!(code_to_key("Digit7"), Some(Key::Unicode('7'))));
+        assert!(matches!(code_to_key("Numpad3"), Some(Key::Unicode('3'))));
+        assert!(matches!(code_to_key("Minus"), Some(Key::Unicode('-'))));
+        assert!(matches!(code_to_key("Slash"), Some(Key::Unicode('/'))));
+    }
+
+    #[test]
+    fn code_to_key_named_keys() {
+        assert!(matches!(code_to_key("Enter"), Some(Key::Return)));
+        assert!(matches!(code_to_key("Escape"), Some(Key::Escape)));
+        assert!(matches!(code_to_key("Space"), Some(Key::Space)));
+        assert!(matches!(code_to_key("ArrowUp"), Some(Key::UpArrow)));
+        assert!(matches!(code_to_key("ArrowRight"), Some(Key::RightArrow)));
+        assert!(matches!(code_to_key("F5"), Some(Key::F5)));
+        assert!(matches!(code_to_key("F12"), Some(Key::F12)));
+        assert!(matches!(code_to_key("ShiftLeft"), Some(Key::Shift)));
+        assert!(matches!(code_to_key("ControlRight"), Some(Key::Control)));
+        assert!(matches!(code_to_key("MetaLeft"), Some(Key::Meta)));
+    }
+
+    #[test]
+    fn code_to_key_unknown_is_none() {
+        assert!(code_to_key("MediaPlayPause").is_none());
+        assert!(code_to_key("Fn").is_none());
+        assert!(code_to_key("").is_none());
     }
 }

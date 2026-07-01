@@ -25,6 +25,7 @@ rpassword = "7"
 dirs = "5"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+enigo = "0.6"
 
 [dev-dependencies]
 wiremock = "0.6"
