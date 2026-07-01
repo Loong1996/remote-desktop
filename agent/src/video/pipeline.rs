@@ -30,10 +30,11 @@ impl VideoPipeline {
             let mut n: u64 = 0;
             // hold capturer alive for the life of the thread
             let _capturer = capturer;
-            loop {
-                if stop_rx.try_recv().is_ok() {
-                    break;
-                }
+            // Stop when the VideoPipeline is dropped: its `_stop` Sender drops,
+            // so try_recv() returns Disconnected (NOT Empty). Loop only while
+            // Empty; anything else (including Disconnected) exits.
+            // (`.is_ok()` would miss Disconnected.)
+            while let Err(std::sync::mpsc::TryRecvError::Empty) = stop_rx.try_recv() {
                 let frame = match frame_rx.recv_timeout(std::time::Duration::from_millis(200)) {
                     Ok(f) => f,
                     Err(mpsc::RecvTimeoutError::Timeout) => continue,

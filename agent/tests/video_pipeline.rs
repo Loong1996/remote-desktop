@@ -25,3 +25,19 @@ fn testpattern_pipeline_produces_encoded_keyframe() {
     assert!(samples[0].keyframe, "first sample should be a forced keyframe");
     assert!(!samples[0].data.is_empty());
 }
+
+#[test]
+fn pipeline_stops_producing_after_drop() {
+    let sink = Arc::new(RecordingSink::default());
+    let capturer = Box::new(TestPatternSource { width: 128, height: 72, fps: 60 });
+    let encoder = Box::new(Openh264Encoder::new(64, 64, 1_000_000, 60.0).unwrap());
+    let pipeline = VideoPipeline::start(capturer, encoder, sink.clone(), 64, 64, 60);
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    drop(pipeline);
+    // let any in-flight frame settle, then snapshot
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    let count = sink.0.lock().unwrap().len();
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    let after = sink.0.lock().unwrap().len();
+    assert_eq!(count, after, "pipeline kept producing samples after drop (thread leak)");
+}
