@@ -356,7 +356,12 @@ Add to the `#[cfg(test)] mod tests` in `agent/src/video/convert.rs`:
         }
         let frame = Frame { width: w as u32, height: h as u32, stride, data, ts_micros: 0 };
         let out = bgra_to_i420(&frame, w, h);
-        assert!(out.y[0] > 200, "white luma {} too low — stride mishandled", out.y[0]);
+        // Assert a NON-ZERO row too: y[0] is at offset 0 regardless of stride, so
+        // only a later row discriminates correct stride math from a width*4 bug
+        // (which would read into the previous row's black padding for rows >= 1).
+        assert!(out.y[0] > 200, "row 0 white luma {} too low", out.y[0]);
+        assert!(out.y[out.y_stride] > 200, "row 1 white luma {} too low — stride mishandled", out.y[out.y_stride]);
+        assert!(out.y[out.y_stride * (h - 1)] > 200, "last-row white luma too low — stride mishandled");
     }
 ```
 
