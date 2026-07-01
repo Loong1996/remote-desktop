@@ -73,7 +73,7 @@ macOS remote access is complete and hardened (Plans 3–5). Next major thrust:
 - `hostname_or` reads only `COMPUTERNAME`/`HOSTNAME` env, not a real hostname syscall.
 
 ### Web (`packages/web`)
-- Device online status is fetched once on mount — no polling/refresh (and stays stale). Add polling or a WS-driven update.
+- ~~Device online status fetched once on mount~~ — FIXED (Plan 7): DevicesPage polls `/devices` every 5s (silent, no flicker), so online/offline + agent reconnects show without a manual reload. (A WS-driven push could replace polling later.)
 - JWT stored in `localStorage` (XSS-exposable) — standard SPA tradeoff; revisit before public deployment.
 - FIFO echo pairing in `SessionView`; `offer.sdp ?? ""` masks an invariant; `String(ArrayBuffer)` fallback for non-text frames (never triggers today).
 
