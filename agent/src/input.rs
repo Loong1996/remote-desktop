@@ -1,5 +1,7 @@
-use enigo::{Button, Key};
+use enigo::{Axis, Button, Coordinate, Direction, Enigo, InputResult, Key, Keyboard, Mouse, Settings};
 use serde::{Deserialize, Serialize};
+use std::sync::mpsc::{Receiver, Sender};
+use std::thread::JoinHandle;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -138,6 +140,84 @@ pub fn code_to_key(code: &str) -> Option<Key> {
     }
 }
 
+/// Owns an `enigo::Enigo` on a dedicated OS thread and injects `InputEvent`s
+/// serially. The data-channel callback only parses frames and pushes them to
+/// `sender()`; this keeps `Enigo` (which is `!Send`) off the async runtime and
+/// serializes injection in event order.
+pub struct InputInjector {
+    tx: Sender<InputEvent>,
+    _handle: JoinHandle<()>,
+}
+
+impl InputInjector {
+    pub fn start() -> Self {
+        let (tx, rx) = std::sync::mpsc::channel::<InputEvent>();
+        let handle = std::thread::spawn(move || injector_loop(rx));
+        Self { tx, _handle: handle }
+    }
+
+    pub fn sender(&self) -> Sender<InputEvent> {
+        self.tx.clone()
+    }
+}
+
+fn injector_loop(rx: Receiver<InputEvent>) {
+    let mut enigo = match Enigo::new(&Settings::default()) {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::error!(
+                "input injection unavailable ({e}); dropping input events. \
+                 On macOS grant Accessibility in System Settings → Privacy & \
+                 Security → Accessibility; on Linux use X11 (Wayland limits synthetic input)."
+            );
+            for _ in rx {} // drain so senders don't error, until channel closes
+            return;
+        }
+    };
+    while let Ok(ev) = rx.recv() {
+        if let Err(e) = inject(&mut enigo, &ev) {
+            tracing::warn!("failed to inject {ev:?}: {e}");
+        }
+    }
+}
+
+fn inject(enigo: &mut Enigo, ev: &InputEvent) -> InputResult<()> {
+    match ev {
+        InputEvent::MMove { x, y } => {
+            let (w, h) = enigo.main_display()?;
+            let (px, py) = map_coord(*x, *y, w, h);
+            enigo.move_mouse(px, py, Coordinate::Abs)
+        }
+        InputEvent::MDown { button } => enigo.button(map_button(button), Direction::Press),
+        InputEvent::MUp { button } => enigo.button(map_button(button), Direction::Release),
+        InputEvent::Wheel { dx, dy } => {
+            let cy = pixels_to_clicks(*dy);
+            if cy != 0 {
+                enigo.scroll(cy, Axis::Vertical)?;
+            }
+            let cx = pixels_to_clicks(*dx);
+            if cx != 0 {
+                enigo.scroll(cx, Axis::Horizontal)?;
+            }
+            Ok(())
+        }
+        InputEvent::KDown { code } => match code_to_key(code) {
+            Some(k) => enigo.key(k, Direction::Press),
+            None => {
+                tracing::warn!("unmapped key code: {code}");
+                Ok(())
+            }
+        },
+        InputEvent::KUp { code } => match code_to_key(code) {
+            Some(k) => enigo.key(k, Direction::Release),
+            None => {
+                tracing::warn!("unmapped key code: {code}");
+                Ok(())
+            }
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -232,5 +312,36 @@ mod mapper_tests {
         assert!(code_to_key("MediaPlayPause").is_none());
         assert!(code_to_key("Fn").is_none());
         assert!(code_to_key("").is_none());
+    }
+}
+
+#[cfg(test)]
+mod injector_tests {
+    use super::*;
+
+    // While the injector is alive the channel is open, so sends succeed. (No
+    // display is required: if enigo init fails the worker drain-drops instead
+    // of closing the channel.)
+    #[test]
+    fn sender_accepts_events_while_alive() {
+        let injector = InputInjector::start();
+        let tx = injector.sender();
+        assert!(tx.send(InputEvent::MMove { x: 0.5, y: 0.5 }).is_ok());
+        assert!(tx.send(InputEvent::KDown { code: "KeyA".into() }).is_ok());
+        drop(tx);
+        drop(injector); // closes channel; worker exits
+    }
+
+    // Real injection: requires a display + (macOS) Accessibility permission.
+    // Run explicitly with: cargo test --manifest-path agent/Cargo.toml -- --ignored
+    #[test]
+    #[ignore]
+    fn injects_a_mouse_move() {
+        let injector = InputInjector::start();
+        injector
+            .sender()
+            .send(InputEvent::MMove { x: 0.5, y: 0.5 })
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(200));
     }
 }
