@@ -8,6 +8,7 @@ import {
   mouseCoords,
   mouseButtonName,
   streamFromTrackEvent,
+  contentRect,
 } from "./rtc.js";
 
 describe("deriveWsUrl", () => {
@@ -99,4 +100,26 @@ test("streamFromTrackEvent falls back to a new stream from the track", () => {
   const ev = { streams: [], track } as unknown as RTCTrackEvent;
   const s = streamFromTrackEvent(ev, (t) => ({ tracks: [t] }) as unknown as MediaStream);
   expect((s as unknown as { tracks: MediaStreamTrack[] }).tracks[0]).toBe(track);
+});
+
+test("contentRect: wide video in a square element letterboxes top/bottom", () => {
+  const r = contentRect({ width: 400, height: 400 }, 1600, 900);
+  expect(r.width).toBe(400);
+  expect(r.height).toBe(225);
+  expect(r.left).toBe(0);
+  expect(r.top).toBe(87.5);
+});
+
+test("contentRect: tall video in a wide element pillarboxes left/right", () => {
+  const r = contentRect({ width: 400, height: 200 }, 100, 200);
+  expect(r.height).toBe(200);
+  expect(r.width).toBe(100);
+  expect(r.top).toBe(0);
+  expect(r.left).toBe(150);
+});
+
+test("contentRect: no stream falls back to the element box", () => {
+  expect(contentRect({ width: 320, height: 240 }, 0, 0)).toEqual({
+    left: 0, top: 0, width: 320, height: 240,
+  });
 });

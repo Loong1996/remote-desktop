@@ -59,6 +59,23 @@ export function mouseCoords(
   };
 }
 
+/** The `object-fit: contain` content box (offsets relative to the element's
+ *  top-left) for a video of intrinsic size `videoW`×`videoH` shown in an
+ *  element of size `el`. Falls back to the full element when the size is unknown. */
+export function contentRect(
+  el: { width: number; height: number },
+  videoW: number,
+  videoH: number,
+): { left: number; top: number; width: number; height: number } {
+  if (videoW <= 0 || videoH <= 0) {
+    return { left: 0, top: 0, width: el.width, height: el.height };
+  }
+  const scale = Math.min(el.width / videoW, el.height / videoH);
+  const width = videoW * scale;
+  const height = videoH * scale;
+  return { left: (el.width - width) / 2, top: (el.height - height) / 2, width, height };
+}
+
 /** Map a DOM `MouseEvent.button` id to the protocol button name (or null). */
 export function mouseButtonName(button: number): MouseButton | null {
   switch (button) {
