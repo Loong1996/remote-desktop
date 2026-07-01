@@ -39,7 +39,9 @@ impl AgentConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     #[test]
+    #[serial]
     fn save_then_load_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.json");
@@ -56,6 +58,7 @@ mod tests {
         std::env::remove_var("RD_AGENT_CONFIG");
     }
     #[test]
+    #[serial]
     fn load_missing_returns_none() {
         let dir = tempfile::tempdir().unwrap();
         std::env::set_var("RD_AGENT_CONFIG", dir.path().join("nope.json"));
