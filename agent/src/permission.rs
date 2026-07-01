@@ -29,11 +29,15 @@ mod tests {
         // Off macOS the check is a no-op that must report available.
         #[cfg(not(target_os = "macos"))]
         assert!(check_input_permission());
-        // On macOS it reflects the live Accessibility trust state, which a unit
-        // test can't assert; just confirm it runs without panicking.
+        // On macOS, do NOT call check_input_permission() here — it uses the
+        // *prompting* Accessibility API and would surface a system dialog during
+        // `cargo test` / CI. Verify the underlying non-prompting trust query is
+        // callable instead (no dialog); the prompting variant is exercised at
+        // real startup, not in tests.
         #[cfg(target_os = "macos")]
         {
-            let _trusted: bool = check_input_permission();
+            let _trusted: bool =
+                macos_accessibility_client::accessibility::application_is_trusted();
         }
     }
 }
