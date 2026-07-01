@@ -26,10 +26,15 @@ Design/plan for Plan 4: `docs/superpowers/specs/2026-07-02-plan4-screen-capture-
 Plan 3 docs: `docs/superpowers/specs/2026-07-01-plan3-input-injection-design.md`, `docs/superpowers/plans/2026-07-01-plan3-input-injection.md`, `docs/superpowers/plan3-input-smoke.md`.
 Overall design: `docs/superpowers/specs/2026-07-01-remote-desktop-design.md`. E2E smoke: `docs/superpowers/plan2b-e2e-smoke.md`.
 
-## Next: cross-platform (macOS MVP done + hardened)
+## Cross-platform status
 
-macOS remote access is complete and hardened (Plans 3–5). Next major thrust:
-1. **Cross-platform capture/encode** (Windows/Linux): implement `ScreenCapturer`/`VideoEncoder` for those platforms behind the existing traits (`scrap`/`xcap`; hardware encoders VideoToolbox/NVENC/VAAPI, or reuse openh264 software first). This is the headline next Plan.
+**CI (`.github/workflows/ci.yml`) is green on macOS + Linux + Windows.** The shared Rust agent (protocol, WebRTC, input via `enigo`, openh264 software encode, video pipeline) and all TS packages compile and pass tests on all three OSes. Off macOS the agent has no real screen capturer yet — `make_source` falls back to the animated test pattern — but everything else (signaling, reconnect, input injection, encode/transport) is cross-platform-ready and CI-validated. Input injection via `enigo` and openh264 encode already work on Windows/Linux; only **screen capture** is macOS-only so far.
+
+## Next: cross-platform (macOS MVP done + hardened; CI green on 3 OSes)
+
+macOS remote access is complete, hardened, and live-validated (Plans 3–7). Next major thrust — now validatable via CI:
+1. **Windows/Linux screen capture** behind the existing `ScreenCapturer` trait: Windows (`windows-capture`/`scrap`/DXGI), Linux (`scrap`/X11, PipeWire/Wayland). Wire into `make_source`'s per-OS `#[cfg]` branch (currently returns the test pattern). openh264 software encode is already shared, so a working capturer is the main missing piece per platform. CI on the matching runner validates it.
+2. **Hardware encode** (perf): VideoToolbox (macOS), NVENC/QSV (Windows), VAAPI (Linux) behind the `VideoEncoder` trait — optional, software openh264 is the portable baseline.
 2. **Bitrate/resolution/fps adaptation** (design §4.1 deferred): react to congestion; multi-monitor; resolution-change renegotiation.
 3. **Server/pairing hardening** (below): reconnect loop, peer-left notification, atomic register, case-insensitive email, token-based agent pairing.
 4. Remaining **Plan 3/5 minor follow-ups** below.
