@@ -49,17 +49,19 @@ function describe(ev: InputEvent): string {
 }
 
 /**
- * Remote session view. Until video lands (Plan 4), a focusable placeholder
- * "remote screen" captures mouse/keyboard, sends each as an InputEvent over the
- * data channel, and logs the most recent events so the operator can see input
- * is transmitting. Injection happens on the agent (被控端).
+ * Remote session view. A `<video>` element renders the remote screen's
+ * MediaStream track and doubles as the focusable capture surface for
+ * mouse/keyboard: each input is sent as an InputEvent over the data channel,
+ * and the most recent events are logged so the operator can see input is
+ * transmitting. Injection happens on the agent (被控端).
  */
 export function SessionView({ token, device, onExit }: SessionViewProps) {
   const [state, setState] = useState<ConnectionState>("connecting");
   const [error, setError] = useState<string | null>(null);
   const [log, setLog] = useState<string[]>([]);
   const sessionRef = useRef<Session | null>(null);
-  const surfaceRef = useRef<HTMLDivElement | null>(null);
+  const surfaceRef = useRef<HTMLVideoElement | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
   // rAF coalescing for mousemove: keep only the latest position per frame.
   const pendingMove = useRef<{ x: number; y: number } | null>(null);
   const rafId = useRef<number | null>(null);
@@ -71,6 +73,9 @@ export function SessionView({ token, device, onExit }: SessionViewProps) {
     const session = connectSession(API_BASE, token, device.id, {
       onState: setState,
       onError: setError,
+      onRemoteStream: (stream) => {
+        if (videoRef.current) videoRef.current.srcObject = stream;
+      },
     });
     sessionRef.current = session;
     return () => {
@@ -167,10 +172,16 @@ export function SessionView({ token, device, onExit }: SessionViewProps) {
 
       {error && <p style={{ color: "crimson" }} role="alert">{error}</p>}
 
-      <div
-        ref={surfaceRef}
+      <video
+        ref={(el) => {
+          surfaceRef.current = el;
+          videoRef.current = el;
+        }}
         data-testid="remote-surface"
         tabIndex={0}
+        autoPlay
+        muted
+        playsInline
         onMouseMove={onMouseMove}
         onMouseDown={onMouseDown}
         onMouseUp={onMouseUp}
@@ -178,15 +189,11 @@ export function SessionView({ token, device, onExit }: SessionViewProps) {
         onKeyUp={onKeyUp}
         onContextMenu={(e) => e.preventDefault()}
         style={{
-          height: 360, borderRadius: 8, border: "2px dashed #cbd5e1",
-          background: connected ? "#0f172a" : "#f1f5f9",
-          color: connected ? "#94a3b8" : "#94a3b8",
-          display: "flex", alignItems: "center", justifyContent: "center",
-          textAlign: "center", outline: "none", userSelect: "none", cursor: connected ? "crosshair" : "default",
+          width: "100%", height: 360, borderRadius: 8, border: "2px solid #cbd5e1",
+          background: "#0f172a", outline: "none", objectFit: "contain",
+          cursor: connected ? "crosshair" : "default",
         }}
-      >
-        {connected ? "Remote screen (no video yet — input captured here)" : "Waiting for connection…"}
-      </div>
+      />
 
       <h3 style={{ marginBottom: 4 }}>Sent events</h3>
       <div
