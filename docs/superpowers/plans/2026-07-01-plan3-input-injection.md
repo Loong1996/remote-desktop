@@ -1412,6 +1412,43 @@ export function SessionView({ token, device, onExit }: SessionViewProps) {
 }
 ```
 
+> **CORRECTION (governs over the Step-1 sample above):** the `wheel` handler must
+> `preventDefault()` to stop the local page scrolling during capture, but React 18
+> registers `wheel` as a **passive** root listener — so `e.preventDefault()` inside a
+> React `onWheel` prop is a no-op and logs a console warning. Attach a **native
+> non-passive** listener instead. Replace the `onWheel` React prop + function with:
+>
+> ```tsx
+>   // connected state mirrored into a ref so the native wheel listener (attached
+>   // once) always sees the current value without re-subscribing.
+>   const connectedRef = useRef(false);
+>   connectedRef.current = state === "connected";
+>
+>   // stable emit so the native-wheel effect subscribes once
+>   const emit = useCallback((ev: InputEvent) => {
+>     sessionRef.current?.sendInput(ev);
+>     setLog((prev) => [describe(ev), ...prev].slice(0, 20));
+>   }, []);
+>
+>   // Native, non-passive wheel listener: React's onWheel is passive so it can't
+>   // preventDefault. This one can, stopping the page from scrolling during capture.
+>   useEffect(() => {
+>     const el = surfaceRef.current;
+>     if (!el) return;
+>     const onWheelNative = (e: WheelEvent) => {
+>       if (!connectedRef.current) return;
+>       e.preventDefault();
+>       emit({ t: "wheel", dx: e.deltaX, dy: e.deltaY });
+>     };
+>     el.addEventListener("wheel", onWheelNative, { passive: false });
+>     return () => el.removeEventListener("wheel", onWheelNative);
+>   }, [emit]);
+> ```
+>
+> Remove the `onWheel={onWheel}` prop and the `onWheel` function from Step 1; the
+> other handlers (mouse/key) stay as React props (those events are not passive), and
+> they call the same `emit`. Import `useCallback` from `react`.
+
 - [ ] **Step 2: Typecheck and build the web package**
 
 Run: `npm run typecheck && npm run -w @rd/web build`
