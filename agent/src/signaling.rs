@@ -49,14 +49,33 @@ pub async fn run_agent(config: AgentConfig) -> Result<()> {
                 ice_servers,
                 ..
             } => {
-                let peer = PeerSession::new(ice_servers).await?;
+                if current.is_some() {
+                    tracing::info!(
+                        "incoming session {session_id} supersedes existing current session"
+                    );
+                }
+                let peer = match PeerSession::new(ice_servers).await {
+                    Ok(p) => p,
+                    Err(e) => {
+                        tracing::error!("failed to construct peer session for {session_id}: {e}");
+                        continue;
+                    }
+                };
                 current = Some((session_id, peer));
                 tracing::info!("incoming session accepted, awaiting offer");
             }
             SignalingMessage::Sdp { session_id, sdp } if sdp.kind == "offer" => {
                 if let Some((sid, peer)) = &current {
                     if *sid == session_id {
-                        let answer_sdp = peer.accept_offer(&sdp.sdp).await?;
+                        let answer_sdp = match peer.accept_offer(&sdp.sdp).await {
+                            Ok(a) => a,
+                            Err(e) => {
+                                tracing::error!(
+                                    "failed to accept offer for session {session_id}: {e}"
+                                );
+                                continue;
+                            }
+                        };
                         let reply = serde_json::to_string(&SignalingMessage::Sdp {
                             session_id,
                             sdp: SdpDesc {
@@ -64,7 +83,10 @@ pub async fn run_agent(config: AgentConfig) -> Result<()> {
                                 sdp: answer_sdp,
                             },
                         })?;
-                        write.send(Message::Text(reply)).await?;
+                        if let Err(e) = write.send(Message::Text(reply)).await {
+                            tracing::error!("failed to send answer: {e}");
+                            continue;
+                        }
                     }
                 }
             }
