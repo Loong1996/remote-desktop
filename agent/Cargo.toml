@@ -3,6 +3,14 @@ name = "rd-agent"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "rd_agent"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rd-agent"
+path = "src/main.rs"
+
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 webrtc = "0.11"
