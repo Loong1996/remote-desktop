@@ -724,11 +724,11 @@ async fn agent_answer_includes_video_when_offer_requests_it() {
     // agent sends video → its m-line is sendonly (or sendrecv)
     assert!(answer_sdp.contains("a=sendonly") || answer_sdp.contains("a=sendrecv"),
         "video not sendable in answer:\n{answer_sdp}");
-    // the agent's H264 track must be negotiated: the answer advertises an H264
-    // rtpmap (e.g. `a=rtpmap:96 H264/90000`). This is the cheap first-line gate
-    // that the video track/codec is actually offered; full RTP-flow delivery is
-    // covered by the manual smoke (Task 8).
-    assert!(answer_sdp.contains("H264"), "answer video has no H264 rtpmap:\n{answer_sdp}");
+    // REAL gate: the m=video line + H264 rtpmap come from register_default_codecs
+    // + webrtc-rs transceiver mirroring, so SDP substrings pass even without a
+    // track. Assert the agent actually attached a sendable video track — this
+    // goes red if pc.add_track is removed. (Full RTP delivery: manual smoke, Task 8.)
+    assert_eq!(agent.video_sender_count().await, 1, "agent has no attached video sender track");
 
     let _ = RTCSessionDescription::answer(answer_sdp).unwrap();
     agent.close().await.unwrap();
@@ -837,6 +837,24 @@ Refactor the tail of `build` so both the encoder-fail path and the normal path c
 ```
 
 (The `_input_tx` is already consumed by `wire_input` earlier in `build`; `finish` only assembles the struct. `new` still sets `_injector` after building, as in Plan 3.) Keep `new`/`new_with_input_sink` working: `new` calls `build(..)` then sets `session._injector = Some(injector)` as before — unchanged.
+
+Also add a test accessor so `video_sdp` can gate the actual `add_track` (SDP text alone can't — codec registration + transceiver mirroring make `m=video`/`H264` appear regardless):
+
+```rust
+    /// Number of RTP senders that currently have a local track attached — i.e.
+    /// how many media tracks the agent actually added (0 without `add_track`).
+    pub async fn video_sender_count(&self) -> usize {
+        let mut n = 0;
+        for s in self.pc.get_senders().await {
+            if s.track().await.is_some() {
+                n += 1;
+            }
+        }
+        n
+    }
+```
+
+(Verify `pc.get_senders().await -> Vec<Arc<RTCRtpSender>>` and `sender.track().await -> Option<..>` against webrtc 0.11.0; correct + report if a name differs.)
 
 - [ ] **Step 8: Run both video tests + the full suite**
 
