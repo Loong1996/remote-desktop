@@ -4,7 +4,7 @@
   "workspaces": ["packages/*"],
   "scripts": {
     "test": "vitest run",
-    "typecheck": "tsc -b"
+    "typecheck": "tsc -p packages/protocol --noEmit && tsc -p packages/server --noEmit"
   },
   "devDependencies": {
     "typescript": "^5.5.0",

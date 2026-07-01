@@ -33,7 +33,7 @@ test("parses a peer-left message", () => {
 
 test("parses an ice message", () => {
   const msg = parseSignalingMessage({ type: "ice", sessionId: "s1", candidate: { foo: 1 } });
-  expect(msg.type).toBe("ice");
+  if (msg.type !== "ice") throw new Error("expected ice message");
   expect(msg.sessionId).toBe("s1");
 });
 
