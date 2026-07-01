@@ -1,0 +1,23 @@
+{
+  "name": "@rd/server",
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@rd/protocol": "*",
+    "fastify": "^4.28.0",
+    "ws": "^8.18.0",
+    "better-sqlite3": "^11.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "bcryptjs": "^2.4.3"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.10",
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/jsonwebtoken": "^9.0.6",
+    "@types/bcryptjs": "^2.4.6"
+  }
+}
