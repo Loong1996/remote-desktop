@@ -2,7 +2,6 @@ use rd_agent::webrtc_peer::PeerSession;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use webrtc::api::APIBuilder;
-use webrtc::data_channel::data_channel_message::DataChannelMessage;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
@@ -17,10 +16,15 @@ use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 // other's candidates in via add_remote_ice / add_ice_candidate. Connectivity
 // only succeeds if trickle works in both directions.
 #[tokio::test]
-async fn agent_trickles_ice_and_echoes() {
+async fn agent_trickles_ice_and_forwards_input() {
     // agent side (under test): local candidates come out on agent_ice_rx.
     let (agent_ice_tx, mut agent_ice_rx) = mpsc::unbounded_channel::<serde_json::Value>();
-    let agent = Arc::new(PeerSession::new(vec![], agent_ice_tx).await.unwrap());
+    let (input_tx, input_rx) = std::sync::mpsc::channel::<rd_agent::input::InputEvent>();
+    let agent = Arc::new(
+        PeerSession::new_with_input_sink(vec![], agent_ice_tx, input_tx)
+            .await
+            .unwrap(),
+    );
 
     // web side (built here in the test).
     let api = APIBuilder::new().build();
@@ -55,20 +59,13 @@ async fn agent_trickles_ice_and_echoes() {
         }
     });
 
-    let dc = web.create_data_channel("echo", None).await.unwrap();
-
-    let (got_tx, mut got_rx) = mpsc::unbounded_channel::<String>();
-    dc.on_message(Box::new(move |msg: DataChannelMessage| {
-        let s = String::from_utf8(msg.data.to_vec()).unwrap();
-        let _ = got_tx.send(s);
-        Box::pin(async {})
-    }));
+    let dc = web.create_data_channel("input", None).await.unwrap();
 
     let dc2 = dc.clone();
     dc.on_open(Box::new(move || {
         let dc3 = dc2.clone();
         Box::pin(async move {
-            let _ = dc3.send_text("hello".to_string()).await;
+            let _ = dc3.send_text(r#"{"t":"kdown","code":"KeyA"}"#.to_string()).await;
         })
     }));
 
@@ -80,13 +77,30 @@ async fn agent_trickles_ice_and_echoes() {
     let answer = RTCSessionDescription::answer(answer_sdp).unwrap();
     web.set_remote_description(answer).await.unwrap();
 
-    // expect to receive echo:hello (timeout guards against hangs)
-    let got = tokio::time::timeout(std::time::Duration::from_secs(15), got_rx.recv())
-        .await
-        .expect("timed out waiting for echo")
-        .unwrap();
-    assert_eq!(got, "echo:hello");
+    let got = tokio::task::spawn_blocking(move || {
+        input_rx.recv_timeout(std::time::Duration::from_secs(15))
+    })
+    .await
+    .unwrap()
+    .expect("timed out waiting for input event over trickle ICE");
+    assert_eq!(got, rd_agent::input::InputEvent::KDown { code: "KeyA".into() });
 
     agent.close().await.unwrap();
     web.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn pre_offer_remote_candidate_is_buffered_not_dropped() {
+    let (agent_ice_tx, _rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
+    let agent = rd_agent::webrtc_peer::PeerSession::new(vec![], agent_ice_tx)
+        .await
+        .unwrap();
+    // A candidate arriving before accept_offer must be accepted (buffered), not error.
+    let candidate = serde_json::json!({
+        "candidate": "candidate:1 1 udp 2130706431 127.0.0.1 54321 typ host",
+        "sdpMid": "0",
+        "sdpMLineIndex": 0
+    });
+    agent.add_remote_ice(candidate).await.unwrap();
+    agent.close().await.unwrap();
 }

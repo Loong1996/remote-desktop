@@ -1,17 +1,18 @@
-import { useEffect, useRef, useState } from "react";
-import type { Device } from "@rd/protocol";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { Device, InputEvent } from "@rd/protocol";
 import { API_BASE } from "../api.js";
-import { connectSession, type ConnectionState, type Session } from "../rtc.js";
+import {
+  connectSession,
+  mouseButtonName,
+  mouseCoords,
+  type ConnectionState,
+  type Session,
+} from "../rtc.js";
 
 export interface SessionViewProps {
   token: string;
   device: Device;
   onExit: () => void;
-}
-
-interface EchoEntry {
-  sent: string;
-  reply?: string;
 }
 
 const STATE_LABEL: Record<ConnectionState, string> = {
@@ -30,60 +31,120 @@ const STATE_COLOR: Record<ConnectionState, string> = {
   error: "crimson",
 };
 
+function describe(ev: InputEvent): string {
+  switch (ev.t) {
+    case "mmove":
+      return `mmove ${ev.x.toFixed(2)},${ev.y.toFixed(2)}`;
+    case "mdown":
+      return `mdown ${ev.button}`;
+    case "mup":
+      return `mup ${ev.button}`;
+    case "wheel":
+      return `wheel ${ev.dx.toFixed(0)},${ev.dy.toFixed(0)}`;
+    case "kdown":
+      return `kdown ${ev.code}`;
+    case "kup":
+      return `kup ${ev.code}`;
+  }
+}
+
 /**
- * Remote session view. Opens a WebRTC "echo" data channel to the selected
- * device via the signaling server, lets the operator send text, and shows the
- * echoed replies alongside the live connection state.
+ * Remote session view. Until video lands (Plan 4), a focusable placeholder
+ * "remote screen" captures mouse/keyboard, sends each as an InputEvent over the
+ * data channel, and logs the most recent events so the operator can see input
+ * is transmitting. Injection happens on the agent (被控端).
  */
 export function SessionView({ token, device, onExit }: SessionViewProps) {
   const [state, setState] = useState<ConnectionState>("connecting");
   const [error, setError] = useState<string | null>(null);
-  const [entries, setEntries] = useState<EchoEntry[]>([]);
-  const [draft, setDraft] = useState("");
+  const [log, setLog] = useState<string[]>([]);
   const sessionRef = useRef<Session | null>(null);
-  // Tracks which sent message is awaiting its echo (FIFO).
-  const pendingRef = useRef<number>(0);
+  const surfaceRef = useRef<HTMLDivElement | null>(null);
+  // rAF coalescing for mousemove: keep only the latest position per frame.
+  const pendingMove = useRef<{ x: number; y: number } | null>(null);
+  const rafId = useRef<number | null>(null);
 
   useEffect(() => {
     setState("connecting");
     setError(null);
-    setEntries([]);
-    pendingRef.current = 0;
-
+    setLog([]);
     const session = connectSession(API_BASE, token, device.id, {
-      onState: (s) => setState(s),
-      onError: (message) => setError(message),
-      onEcho: (text) => {
-        setEntries((prev) => {
-          const next = [...prev];
-          // Attach the echo to the oldest message still awaiting a reply.
-          const idx = next.findIndex((e) => e.reply === undefined);
-          if (idx >= 0) next[idx] = { ...next[idx], reply: text };
-          else next.push({ sent: "", reply: text });
-          return next;
-        });
-      },
+      onState: setState,
+      onError: setError,
     });
     sessionRef.current = session;
-
     return () => {
       session.close();
       sessionRef.current = null;
+      if (rafId.current !== null) cancelAnimationFrame(rafId.current);
     };
   }, [token, device.id]);
 
-  function send() {
-    const text = draft.trim();
-    if (!text || state !== "connected") return;
-    sessionRef.current?.send(text);
-    setEntries((prev) => [...prev, { sent: text }]);
-    setDraft("");
+  const connected = state === "connected";
+  const connectedRef = useRef(false);
+  connectedRef.current = connected;
+
+  const emit = useCallback((ev: InputEvent) => {
+    sessionRef.current?.sendInput(ev);
+    setLog((prev) => [describe(ev), ...prev].slice(0, 20));
+  }, []);
+
+  useEffect(() => {
+    const el = surfaceRef.current;
+    if (!el) return;
+    const onWheelNative = (e: WheelEvent) => {
+      if (!connectedRef.current) return;
+      e.preventDefault();
+      emit({ t: "wheel", dx: e.deltaX, dy: e.deltaY });
+    };
+    el.addEventListener("wheel", onWheelNative, { passive: false });
+    return () => el.removeEventListener("wheel", onWheelNative);
+  }, [emit]);
+
+  function onMouseMove(e: React.MouseEvent) {
+    if (!connected || !surfaceRef.current) return;
+    const rect = surfaceRef.current.getBoundingClientRect();
+    pendingMove.current = mouseCoords(e.clientX, e.clientY, rect);
+    if (rafId.current === null) {
+      rafId.current = requestAnimationFrame(() => {
+        rafId.current = null;
+        const p = pendingMove.current;
+        pendingMove.current = null;
+        if (p) emit({ t: "mmove", x: p.x, y: p.y });
+      });
+    }
   }
 
-  const connected = state === "connected";
+  function onMouseDown(e: React.MouseEvent) {
+    if (!connected) return;
+    const button = mouseButtonName(e.button);
+    if (button) emit({ t: "mdown", button });
+  }
+
+  function onMouseUp(e: React.MouseEvent) {
+    if (!connected) return;
+    const button = mouseButtonName(e.button);
+    if (button) emit({ t: "mup", button });
+  }
+
+  function onKeyDown(e: React.KeyboardEvent) {
+    if (!connected) return;
+    if (e.code === "Escape") {
+      surfaceRef.current?.blur();
+      return;
+    }
+    e.preventDefault();
+    emit({ t: "kdown", code: e.code });
+  }
+
+  function onKeyUp(e: React.KeyboardEvent) {
+    if (!connected) return;
+    e.preventDefault();
+    emit({ t: "kup", code: e.code });
+  }
 
   return (
-    <div style={{ maxWidth: 560, margin: "5vh auto", fontFamily: "system-ui" }}>
+    <div style={{ maxWidth: 720, margin: "5vh auto", fontFamily: "system-ui" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <button onClick={onExit}>← Back to devices</button>
         <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -101,61 +162,44 @@ export function SessionView({ token, device, onExit }: SessionViewProps) {
 
       <h2>Session: {device.name}</h2>
       <p style={{ color: "#888" }}>
-        Device <code>{device.id}</code> — data-channel echo
+        Click the panel to capture — mouse & keyboard are sent to <code>{device.id}</code>. Press Esc to release.
       </p>
 
       {error && <p style={{ color: "crimson" }} role="alert">{error}</p>}
 
       <div
+        ref={surfaceRef}
+        data-testid="remote-surface"
+        tabIndex={0}
+        onMouseMove={onMouseMove}
+        onMouseDown={onMouseDown}
+        onMouseUp={onMouseUp}
+        onKeyDown={onKeyDown}
+        onKeyUp={onKeyUp}
+        onContextMenu={(e) => e.preventDefault()}
         style={{
-          border: "1px solid #eee", borderRadius: 8, padding: 12, minHeight: 160,
-          marginBottom: 12, background: "#fafafa",
+          height: 360, borderRadius: 8, border: "2px dashed #cbd5e1",
+          background: connected ? "#0f172a" : "#f1f5f9",
+          color: connected ? "#94a3b8" : "#94a3b8",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          textAlign: "center", outline: "none", userSelect: "none", cursor: connected ? "crosshair" : "default",
         }}
       >
-        {entries.length === 0 && (
-          <p style={{ color: "#aaa", margin: 0 }}>No messages yet. Send one below.</p>
-        )}
-        {entries.map((e, i) => (
-          <div key={i} style={{ marginBottom: 8 }}>
-            {e.sent && (
-              <div style={{ textAlign: "right" }}>
-                <span style={{ background: "#dbeafe", padding: "4px 8px", borderRadius: 6 }}>
-                  {e.sent}
-                </span>
-              </div>
-            )}
-            {e.reply !== undefined && (
-              <div style={{ textAlign: "left", marginTop: 2 }}>
-                <span
-                  data-testid="echo-reply"
-                  style={{ background: "#dcfce7", padding: "4px 8px", borderRadius: 6 }}
-                >
-                  {e.reply}
-                </span>
-              </div>
-            )}
-          </div>
-        ))}
+        {connected ? "Remote screen (no video yet — input captured here)" : "Waiting for connection…"}
       </div>
 
-      <form
-        onSubmit={(ev) => {
-          ev.preventDefault();
-          send();
+      <h3 style={{ marginBottom: 4 }}>Sent events</h3>
+      <div
+        style={{
+          border: "1px solid #eee", borderRadius: 8, padding: 8, height: 140,
+          overflowY: "auto", background: "#fafafa", fontFamily: "ui-monospace, monospace", fontSize: 12,
         }}
-        style={{ display: "flex", gap: 8 }}
       >
-        <input
-          style={{ flex: 1 }}
-          placeholder={connected ? "Type a message to echo" : "Waiting for connection…"}
-          value={draft}
-          disabled={!connected}
-          onChange={(ev) => setDraft(ev.target.value)}
-        />
-        <button type="submit" disabled={!connected || draft.trim().length === 0}>
-          Send
-        </button>
-      </form>
+        {log.length === 0 && <p style={{ color: "#aaa", margin: 0 }}>No events yet.</p>}
+        {log.map((line, i) => (
+          <div key={i} data-testid="event-line">{line}</div>
+        ))}
+      </div>
     </div>
   );
 }

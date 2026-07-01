@@ -1,6 +1,9 @@
+use crate::input::{InputEvent, InputInjector};
 use crate::protocol::IceServer;
 use anyhow::Result;
+use std::sync::mpsc::Sender;
 use std::sync::Arc;
+use std::sync::Mutex;
 use tokio::sync::mpsc::UnboundedSender;
 use webrtc::api::interceptor_registry::register_default_interceptors;
 use webrtc::api::media_engine::MediaEngine;
@@ -14,8 +17,37 @@ use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
 
+/// Buffers remote ICE candidates that arrive before the remote description is
+/// set. `accept` returns `Some(c)` when the candidate can be added immediately,
+/// or `None` when it has been buffered. `on_remote_set` marks the remote
+/// description as set and returns the buffered candidates to flush, in order.
+pub(crate) struct IceBuffer<T> {
+    remote_set: bool,
+    pending: Vec<T>,
+}
+
+impl<T> IceBuffer<T> {
+    pub(crate) fn new() -> Self {
+        Self { remote_set: false, pending: Vec::new() }
+    }
+    pub(crate) fn accept(&mut self, candidate: T) -> Option<T> {
+        if self.remote_set {
+            Some(candidate)
+        } else {
+            self.pending.push(candidate);
+            None
+        }
+    }
+    pub(crate) fn on_remote_set(&mut self) -> Vec<T> {
+        self.remote_set = true;
+        std::mem::take(&mut self.pending)
+    }
+}
+
 pub struct PeerSession {
     pc: Arc<RTCPeerConnection>,
+    ice_buffer: Mutex<IceBuffer<RTCIceCandidateInit>>,
+    _injector: Option<InputInjector>,
 }
 
 fn to_rtc_ice(servers: Vec<IceServer>) -> Vec<RTCIceServer> {
@@ -40,20 +72,29 @@ fn to_rtc_ice(servers: Vec<IceServer>) -> Vec<RTCIceServer> {
         .collect()
 }
 
-fn wire_echo(dc: Arc<RTCDataChannel>) {
-    let dc_for_msg = dc.clone();
+fn wire_input(dc: Arc<RTCDataChannel>, input_tx: Sender<InputEvent>) {
     dc.on_message(Box::new(move |msg: DataChannelMessage| {
-        let dc = dc_for_msg.clone();
+        let input_tx = input_tx.clone();
         Box::pin(async move {
-            if let Ok(text) = String::from_utf8(msg.data.to_vec()) {
-                let _ = dc.send_text(format!("echo:{text}")).await;
+            let text = match String::from_utf8(msg.data.to_vec()) {
+                Ok(t) => t,
+                Err(_) => {
+                    tracing::warn!("dropping non-utf8 input frame");
+                    return;
+                }
+            };
+            match serde_json::from_str::<InputEvent>(&text) {
+                Ok(ev) => {
+                    let _ = input_tx.send(ev);
+                }
+                Err(e) => tracing::warn!("dropping malformed input event: {e}"),
             }
         })
     }));
 }
 
 impl PeerSession {
-    /// Construct an answerer peer session.
+    /// Production constructor: owns a real enigo-backed injector.
     ///
     /// `local_ice_tx` receives each locally-gathered ICE candidate (serialized
     /// from `RTCIceCandidateInit` to a `serde_json::Value`) as it is
@@ -63,6 +104,28 @@ impl PeerSession {
     pub async fn new(
         ice_servers: Vec<IceServer>,
         local_ice_tx: UnboundedSender<serde_json::Value>,
+    ) -> Result<PeerSession> {
+        let injector = InputInjector::start();
+        let tx = injector.sender();
+        let mut session = Self::build(ice_servers, local_ice_tx, tx).await?;
+        session._injector = Some(injector);
+        Ok(session)
+    }
+
+    /// Test seam: forward parsed input events to a caller-provided sink instead
+    /// of a real injector (no display/permission needed).
+    pub async fn new_with_input_sink(
+        ice_servers: Vec<IceServer>,
+        local_ice_tx: UnboundedSender<serde_json::Value>,
+        input_tx: Sender<InputEvent>,
+    ) -> Result<PeerSession> {
+        Self::build(ice_servers, local_ice_tx, input_tx).await
+    }
+
+    async fn build(
+        ice_servers: Vec<IceServer>,
+        local_ice_tx: UnboundedSender<serde_json::Value>,
+        input_tx: Sender<InputEvent>,
     ) -> Result<PeerSession> {
         let mut m = MediaEngine::default();
         m.register_default_codecs()?;
@@ -103,13 +166,18 @@ impl PeerSession {
         }));
 
         // agent is the answerer: the remote side creates the data channel;
-        // we pick it up here in on_data_channel and wire the echo behavior.
+        // we pick it up here in on_data_channel and wire input forwarding.
         pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
-            wire_echo(dc);
+            let input_tx = input_tx.clone();
+            wire_input(dc, input_tx);
             Box::pin(async {})
         }));
 
-        Ok(PeerSession { pc })
+        Ok(PeerSession {
+            pc,
+            ice_buffer: Mutex::new(IceBuffer::new()),
+            _injector: None,
+        })
     }
 
     /// Handle a remote offer and return the local answer SDP. Waits for ICE
@@ -118,6 +186,12 @@ impl PeerSession {
     pub async fn accept_offer(&self, offer_sdp: &str) -> Result<String> {
         let offer = RTCSessionDescription::offer(offer_sdp.to_string())?;
         self.pc.set_remote_description(offer).await?;
+        let flushed = { self.ice_buffer.lock().unwrap().on_remote_set() };
+        for init in flushed {
+            if let Err(e) = self.pc.add_ice_candidate(init).await {
+                tracing::warn!("failed to add buffered ice candidate: {e}");
+            }
+        }
         let answer = self.pc.create_answer(None).await?;
         let mut gather_complete = self.pc.gathering_complete_promise().await;
         self.pc.set_local_description(answer).await?;
@@ -132,12 +206,30 @@ impl PeerSession {
 
     pub async fn add_remote_ice(&self, candidate: serde_json::Value) -> Result<()> {
         let init: RTCIceCandidateInit = serde_json::from_value(candidate)?;
-        self.pc.add_ice_candidate(init).await?;
+        let ready = { self.ice_buffer.lock().unwrap().accept(init) };
+        if let Some(init) = ready {
+            self.pc.add_ice_candidate(init).await?;
+        }
         Ok(())
     }
 
     pub async fn close(&self) -> Result<()> {
         self.pc.close().await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod ice_buffer_tests {
+    use super::IceBuffer;
+
+    #[test]
+    fn buffers_until_remote_set_then_drains_in_order() {
+        let mut b: IceBuffer<i32> = IceBuffer::new();
+        assert_eq!(b.accept(1), None); // buffered
+        assert_eq!(b.accept(2), None); // buffered
+        assert_eq!(b.on_remote_set(), vec![1, 2]); // flushed in order
+        assert_eq!(b.accept(3), Some(3)); // now passes through
+        assert_eq!(b.on_remote_set(), Vec::<i32>::new()); // idempotent, nothing pending
     }
 }

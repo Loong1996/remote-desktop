@@ -1,6 +1,13 @@
-import { describe, it, expect } from "vitest";
-import { parseSignalingMessage } from "@rd/protocol";
-import { deriveWsUrl, buildConnect, buildOffer, buildIce } from "./rtc.js";
+import { describe, it, expect, test } from "vitest";
+import { parseSignalingMessage, parseInputEvent } from "@rd/protocol";
+import {
+  deriveWsUrl,
+  buildConnect,
+  buildOffer,
+  buildIce,
+  mouseCoords,
+  mouseButtonName,
+} from "./rtc.js";
 
 describe("deriveWsUrl", () => {
   it("maps http:// to ws:// and appends the token query", () => {
@@ -53,5 +60,29 @@ describe("buildIce", () => {
     const msg = buildIce("sess-1", candidate);
     expect(msg).toEqual({ type: "ice", sessionId: "sess-1", candidate });
     expect(parseSignalingMessage(msg)).toEqual(msg);
+  });
+});
+
+test("mouseCoords produces clamped [0,1] relative coords", () => {
+  const rect = { left: 100, top: 50, width: 800, height: 600 };
+  expect(mouseCoords(500, 350, rect)).toEqual({ x: 0.5, y: 0.5 });
+  // out-of-bounds clamps into range
+  expect(mouseCoords(0, 0, rect)).toEqual({ x: 0, y: 0 });
+  expect(mouseCoords(2000, 2000, rect)).toEqual({ x: 1, y: 1 });
+});
+
+test("mouseButtonName maps DOM button ids", () => {
+  expect(mouseButtonName(0)).toBe("left");
+  expect(mouseButtonName(1)).toBe("middle");
+  expect(mouseButtonName(2)).toBe("right");
+  expect(mouseButtonName(3)).toBeNull();
+});
+
+test("encoded events pass the protocol validator", () => {
+  const { x, y } = mouseCoords(500, 350, { left: 100, top: 50, width: 800, height: 600 });
+  expect(parseInputEvent({ t: "mmove", x, y })).toEqual({ t: "mmove", x: 0.5, y: 0.5 });
+  expect(parseInputEvent({ t: "mdown", button: mouseButtonName(0) })).toEqual({
+    t: "mdown",
+    button: "left",
   });
 });

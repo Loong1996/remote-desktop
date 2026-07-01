@@ -6,6 +6,10 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
+    if !rd_agent::permission::check_input_permission() {
+        tracing::warn!("continuing without input permission; session will connect but injection is disabled");
+    }
+
     let cfg = match AgentConfig::load()? {
         Some(c) => {
             tracing::info!("loaded config for device {}", c.device_id);
