@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::mpsc::{Receiver, Sender};
 use std::thread::JoinHandle;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MouseButton {
     Left,
@@ -161,6 +161,46 @@ impl InputInjector {
     }
 }
 
+/// Tracks which keys/buttons are currently pressed, so they can be released if
+/// the input channel closes mid-hold (web crash / tab close / disconnect) —
+/// otherwise a held modifier or button would stick on the被控端.
+#[derive(Default)]
+struct PressedState {
+    keys: std::collections::HashSet<String>,
+    buttons: std::collections::HashSet<MouseButton>,
+}
+
+impl PressedState {
+    fn apply(&mut self, ev: &InputEvent) {
+        match ev {
+            InputEvent::KDown { code } => {
+                self.keys.insert(code.clone());
+            }
+            InputEvent::KUp { code } => {
+                self.keys.remove(code);
+            }
+            InputEvent::MDown { button } => {
+                self.buttons.insert(button.clone());
+            }
+            InputEvent::MUp { button } => {
+                self.buttons.remove(button);
+            }
+            _ => {}
+        }
+    }
+
+    fn pending_releases(&self) -> Vec<InputEvent> {
+        let mut out = Vec::new();
+        for code in &self.keys {
+            out.push(InputEvent::KUp { code: code.clone() });
+        }
+        for button in &self.buttons {
+            out.push(InputEvent::MUp { button: button.clone() });
+        }
+        out
+    }
+}
+
 fn injector_loop(rx: Receiver<InputEvent>) {
     let mut enigo = match Enigo::new(&Settings::default()) {
         Ok(e) => e,
@@ -174,9 +214,18 @@ fn injector_loop(rx: Receiver<InputEvent>) {
             return;
         }
     };
+    let mut pressed = PressedState::default();
     while let Ok(ev) = rx.recv() {
+        pressed.apply(&ev);
         if let Err(e) = inject(&mut enigo, &ev) {
             tracing::warn!("failed to inject {ev:?}: {e}");
+        }
+    }
+    // Channel closed (session ended / web gone): release anything still held so
+    // no key or button sticks down on the被控端.
+    for ev in pressed.pending_releases() {
+        if let Err(e) = inject(&mut enigo, &ev) {
+            tracing::warn!("failed to release {ev:?} on shutdown: {e}");
         }
     }
 }
@@ -343,5 +392,38 @@ mod injector_tests {
             .send(InputEvent::MMove { x: 0.5, y: 0.5 })
             .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+}
+
+#[cfg(test)]
+mod pressed_tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn tracks_and_releases_held_keys_and_buttons() {
+        let mut s = PressedState::default();
+        s.apply(&InputEvent::KDown { code: "ShiftLeft".into() });
+        s.apply(&InputEvent::KDown { code: "KeyA".into() });
+        s.apply(&InputEvent::KUp { code: "KeyA".into() }); // released, should not linger
+        s.apply(&InputEvent::MDown { button: MouseButton::Left });
+        let rel: HashSet<String> = s
+            .pending_releases()
+            .into_iter()
+            .map(|e| format!("{e:?}"))
+            .collect();
+        // ShiftLeft still down, KeyA released, Left button still down
+        assert!(rel.contains(&format!("{:?}", InputEvent::KUp { code: "ShiftLeft".into() })));
+        assert!(rel.contains(&format!("{:?}", InputEvent::MUp { button: MouseButton::Left })));
+        assert!(!rel.contains(&format!("{:?}", InputEvent::KUp { code: "KeyA".into() })));
+        assert_eq!(rel.len(), 2);
+    }
+
+    #[test]
+    fn nothing_to_release_when_all_up() {
+        let mut s = PressedState::default();
+        s.apply(&InputEvent::KDown { code: "KeyB".into() });
+        s.apply(&InputEvent::KUp { code: "KeyB".into() });
+        assert!(s.pending_releases().is_empty());
     }
 }

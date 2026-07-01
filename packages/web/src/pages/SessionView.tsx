@@ -3,8 +3,10 @@ import type { Device, InputEvent } from "@rd/protocol";
 import { API_BASE } from "../api.js";
 import {
   connectSession,
+  contentRect,
   mouseButtonName,
   mouseCoords,
+  releaseEvents,
   type ConnectionState,
   type Session,
 } from "../rtc.js";
@@ -65,6 +67,10 @@ export function SessionView({ token, device, onExit }: SessionViewProps) {
   // rAF coalescing for mousemove: keep only the latest position per frame.
   const pendingMove = useRef<{ x: number; y: number } | null>(null);
   const rafId = useRef<number | null>(null);
+  // Currently-held keys/buttons, so we can release them all if the capture
+  // surface loses focus (nothing should stick down remotely).
+  const pressedKeys = useRef<Set<string>>(new Set());
+  const pressedButtons = useRef<Set<number>>(new Set());
 
   useEffect(() => {
     setState("connecting");
@@ -79,6 +85,7 @@ export function SessionView({ token, device, onExit }: SessionViewProps) {
     });
     sessionRef.current = session;
     return () => {
+      releaseAll();
       session.close();
       sessionRef.current = null;
       if (rafId.current !== null) cancelAnimationFrame(rafId.current);
@@ -94,6 +101,16 @@ export function SessionView({ token, device, onExit }: SessionViewProps) {
     setLog((prev) => [describe(ev), ...prev].slice(0, 20));
   }, []);
 
+  // Release every currently-held key/button (e.g. on blur/mouse-leave/unmount)
+  // so nothing sticks down on the remote side once capture is interrupted.
+  function releaseAll() {
+    for (const ev of releaseEvents([...pressedKeys.current], [...pressedButtons.current])) {
+      sessionRef.current?.sendInput(ev);
+    }
+    pressedKeys.current.clear();
+    pressedButtons.current.clear();
+  }
+
   useEffect(() => {
     const el = surfaceRef.current;
     if (!el) return;
@@ -108,8 +125,11 @@ export function SessionView({ token, device, onExit }: SessionViewProps) {
 
   function onMouseMove(e: React.MouseEvent) {
     if (!connected || !surfaceRef.current) return;
-    const rect = surfaceRef.current.getBoundingClientRect();
-    pendingMove.current = mouseCoords(e.clientX, e.clientY, rect);
+    const el = surfaceRef.current;
+    const rect = el.getBoundingClientRect();
+    const box = contentRect({ width: rect.width, height: rect.height }, el.videoWidth, el.videoHeight);
+    const adj = { left: rect.left + box.left, top: rect.top + box.top, width: box.width, height: box.height };
+    pendingMove.current = mouseCoords(e.clientX, e.clientY, adj);
     if (rafId.current === null) {
       rafId.current = requestAnimationFrame(() => {
         rafId.current = null;
@@ -123,12 +143,16 @@ export function SessionView({ token, device, onExit }: SessionViewProps) {
   function onMouseDown(e: React.MouseEvent) {
     if (!connected) return;
     const button = mouseButtonName(e.button);
-    if (button) emit({ t: "mdown", button });
+    if (button) {
+      pressedButtons.current.add(e.button);
+      emit({ t: "mdown", button });
+    }
   }
 
   function onMouseUp(e: React.MouseEvent) {
     if (!connected) return;
     const button = mouseButtonName(e.button);
+    pressedButtons.current.delete(e.button);
     if (button) emit({ t: "mup", button });
   }
 
@@ -139,12 +163,14 @@ export function SessionView({ token, device, onExit }: SessionViewProps) {
       return;
     }
     e.preventDefault();
+    pressedKeys.current.add(e.code);
     emit({ t: "kdown", code: e.code });
   }
 
   function onKeyUp(e: React.KeyboardEvent) {
     if (!connected) return;
     e.preventDefault();
+    pressedKeys.current.delete(e.code);
     emit({ t: "kup", code: e.code });
   }
 
@@ -185,8 +211,10 @@ export function SessionView({ token, device, onExit }: SessionViewProps) {
         onMouseMove={onMouseMove}
         onMouseDown={onMouseDown}
         onMouseUp={onMouseUp}
+        onMouseLeave={releaseAll}
         onKeyDown={onKeyDown}
         onKeyUp={onKeyUp}
+        onBlur={releaseAll}
         onContextMenu={(e) => e.preventDefault()}
         style={{
           width: "100%", height: 360, borderRadius: 8, border: "2px solid #cbd5e1",

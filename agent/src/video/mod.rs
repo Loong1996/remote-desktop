@@ -17,7 +17,7 @@ pub fn make_source(w: u32, h: u32, fps: u32) -> Box<dyn ScreenCapturer> {
     }
     #[cfg(target_os = "macos")]
     {
-        Box::new(sck_capturer::SckCapturer { fps })
+        Box::new(sck_capturer::SckCapturer::new(fps))
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -73,7 +73,10 @@ pub trait SampleSink: Send + Sync {
 
 #[cfg(test)]
 mod source_selection_tests {
+    use serial_test::serial;
+
     #[test]
+    #[serial]
     fn testpattern_env_forces_synthetic_source() {
         // With RD_VIDEO_SOURCE=testpattern, make_source must not touch the OS.
         std::env::set_var("RD_VIDEO_SOURCE", "testpattern");
