@@ -24,3 +24,9 @@ a warning at startup).
 ## Expected
 Live remote screen in the browser plus working mouse/keyboard injection over the
 same PeerConnection. Fixed 720p/30fps/3Mbps (no adaptation yet).
+
+## Hardening (Plan 5) — what to verify
+- **720p/30fps at the source:** the agent captures at 1280×720/30fps (not native retina/60fps); CPU should be markedly lower than the first Plan 4 cut.
+- **Capture stops on disconnect:** close the browser tab / disconnect → the agent stops capturing (no lingering CPU), and reconnecting does not accumulate capture load.
+- **No stuck keys:** hold Shift (or a mouse button), then press Esc / move the pointer off the video / close the tab → the被控端 releases it (no stuck modifier/button).
+- **Letterbox coords:** if the remote aspect ratio differs from the `<video>` box, the cursor tracks the visible image; positions over the black bars clamp to the edge.
