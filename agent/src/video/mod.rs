@@ -17,7 +17,7 @@ pub fn make_source(w: u32, h: u32, fps: u32) -> Box<dyn ScreenCapturer> {
     }
     #[cfg(target_os = "macos")]
     {
-        Box::new(sck_capturer::SckCapturer { fps })
+        Box::new(sck_capturer::SckCapturer::new(fps))
     }
     #[cfg(not(target_os = "macos"))]
     {

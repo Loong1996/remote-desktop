@@ -12,9 +12,19 @@ use screencapturekit::{
     },
 };
 
-/// Captures the main display via ScreenCaptureKit, delivering BGRA `Frame`s.
+/// Captures the main display via ScreenCaptureKit at 1280x720 / 30fps,
+/// delivering BGRA `Frame`s. The `SCStream` is created and owned on a dedicated
+/// thread (SCStream is not `Send`); dropping the capturer signals that thread to
+/// `stop_capture()` and release the stream — no per-session leak.
 pub struct SckCapturer {
     pub fps: u32,
+    stop: Option<std::sync::mpsc::Sender<()>>,
+}
+
+impl SckCapturer {
+    pub fn new(fps: u32) -> Self {
+        Self { fps, stop: None }
+    }
 }
 
 struct FrameHandler {
@@ -46,29 +56,76 @@ impl SCStreamOutputTrait for FrameHandler {
 
 impl ScreenCapturer for SckCapturer {
     fn start(&mut self, sink: Sender<Frame>) -> anyhow::Result<()> {
-        let content =
-            SCShareableContent::get().map_err(|e| anyhow::anyhow!("SCShareableContent: {e:?}"))?;
-        let display = content
-            .displays()
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("no display found"))?;
-        let filter = SCContentFilter::create()
-            .with_display(&display)
-            .with_excluding_windows(&[])
-            .build();
-        let config = SCStreamConfiguration::new().with_pixel_format(PixelFormat::BGRA);
-        let mut stream = SCStream::new(&filter, &config);
-        stream.add_output_handler(
-            FrameHandler { sink, start: std::time::Instant::now() },
-            SCStreamOutputType::Screen,
-        );
-        stream
-            .start_capture()
-            .map_err(|e| anyhow::anyhow!("start_capture: {e:?}"))?;
-        // Keep the stream alive for the process; SCK drives frames on its own queue.
-        std::mem::forget(stream);
-        Ok(())
+        let fps = self.fps;
+        let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+        // Report setup success/failure back to start() so permission/stream
+        // errors surface synchronously.
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<anyhow::Result<()>>();
+
+        std::thread::spawn(move || {
+            // Build + start the stream on THIS thread; it never moves.
+            let built = (|| -> anyhow::Result<SCStream> {
+                let content = SCShareableContent::get()
+                    .map_err(|e| anyhow::anyhow!("SCShareableContent: {e:?}"))?;
+                let display = content
+                    .displays()
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("no display found"))?;
+                let filter = SCContentFilter::create()
+                    .with_display(&display)
+                    .with_excluding_windows(&[])
+                    .build();
+                let config = SCStreamConfiguration::new()
+                    .with_width(1280)
+                    .with_height(720)
+                    .with_fps(fps)
+                    .with_pixel_format(PixelFormat::BGRA);
+                let mut stream = SCStream::new(&filter, &config);
+                stream.add_output_handler(
+                    FrameHandler { sink, start: std::time::Instant::now() },
+                    SCStreamOutputType::Screen,
+                );
+                stream
+                    .start_capture()
+                    .map_err(|e| anyhow::anyhow!("start_capture: {e:?}"))?;
+                Ok(stream)
+            })();
+
+            match built {
+                Ok(stream) => {
+                    let _ = ready_tx.send(Ok(()));
+                    // Keep the stream alive on this thread until stop is signaled
+                    // (or the capturer is dropped, which drops stop_tx).
+                    let _ = stop_rx.recv();
+                    if let Err(e) = stream.stop_capture() {
+                        tracing::warn!("stop_capture failed: {e:?}");
+                    }
+                    // stream drops here, on its owner thread.
+                }
+                Err(e) => {
+                    let _ = ready_tx.send(Err(e));
+                }
+            }
+        });
+
+        match ready_rx.recv() {
+            Ok(Ok(())) => {
+                self.stop = Some(stop_tx);
+                Ok(())
+            }
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err(anyhow::anyhow!("capture owner thread exited during setup")),
+        }
+    }
+}
+
+impl Drop for SckCapturer {
+    fn drop(&mut self) {
+        // Signal the owner thread to stop_capture + release the stream.
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
     }
 }
 
@@ -81,7 +138,7 @@ mod tests {
     #[test]
     #[ignore]
     fn captures_a_real_frame() {
-        let mut cap = SckCapturer { fps: 30 };
+        let mut cap = SckCapturer::new(30);
         let (tx, rx) = std::sync::mpsc::channel();
         cap.start(tx).unwrap();
         let f = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
