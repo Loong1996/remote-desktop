@@ -28,13 +28,18 @@ Overall design: `docs/superpowers/specs/2026-07-01-remote-desktop-design.md`. E2
 
 ## Cross-platform status
 
-**CI (`.github/workflows/ci.yml`) is green on macOS + Linux + Windows.** The shared Rust agent (protocol, WebRTC, input via `enigo`, openh264 software encode, video pipeline) and all TS packages compile and pass tests on all three OSes. Off macOS the agent has no real screen capturer yet — `make_source` falls back to the animated test pattern — but everything else (signaling, reconnect, input injection, encode/transport) is cross-platform-ready and CI-validated. Input injection via `enigo` and openh264 encode already work on Windows/Linux; only **screen capture** is macOS-only so far.
+**CI (`.github/workflows/ci.yml`) is green on macOS + Linux + Windows.** Per-platform screen-capture status behind the `ScreenCapturer` trait:
+- **macOS** — ScreenCaptureKit (`SckCapturer`), full remote desktop, live-validated.
+- **Windows** — `xcap` (`XcapCapturer`); compiles + links in CI. Full pipeline (capture+input+encode) is buildable; needs a functional smoke on a real Windows box (`#[ignore]` real-capture test + browser).
+- **Linux** — capture NOT wired yet: `make_source` falls back to the test pattern. `xcap`'s Linux/pipewire build failed in CI (deps installed, but `cargo test` failed at the xcap build — needs log access / a Linux box to diagnose, or swap to an X11-only crate like `scrap`).
 
-## Next: cross-platform (macOS MVP done + hardened; CI green on 3 OSes)
+Input injection (`enigo`) and openh264 software encode already compile + pass on all three OSes.
 
-macOS remote access is complete, hardened, and live-validated (Plans 3–7). Next major thrust — now validatable via CI:
-1. **Windows/Linux screen capture** behind the existing `ScreenCapturer` trait: Windows (`windows-capture`/`scrap`/DXGI), Linux (`scrap`/X11, PipeWire/Wayland). Wire into `make_source`'s per-OS `#[cfg]` branch (currently returns the test pattern). openh264 software encode is already shared, so a working capturer is the main missing piece per platform. CI on the matching runner validates it.
-2. **Hardware encode** (perf): VideoToolbox (macOS), NVENC/QSV (Windows), VAAPI (Linux) behind the `VideoEncoder` trait — optional, software openh264 is the portable baseline.
+## Next: finish cross-platform
+
+1. **Linux screen capture** — get `xcap` building on Linux (diagnose the CI `cargo test` failure — likely a missing pipewire/SPA/portal dev dep or an xcap 0.9.6 Linux issue), or implement an X11 capturer via `scrap`/`x11cap` behind `ScreenCapturer`, wired into `make_source`'s Linux branch (currently test-pattern). Same rigor bar as macOS: CI compile + `#[ignore]` real test + manual smoke.
+2. **Windows functional smoke** — run the agent on Windows, confirm the browser shows the Windows screen + input works (the `#[ignore]` `xcap_capturer::captures_a_real_frame` + the e2e smoke).
+3. **Hardware encode** (perf): VideoToolbox (macOS), NVENC/QSV (Windows), VAAPI (Linux) behind the `VideoEncoder` trait — optional; software openh264 is the portable baseline.
 2. **Bitrate/resolution/fps adaptation** (design §4.1 deferred): react to congestion; multi-monitor; resolution-change renegotiation.
 3. **Server/pairing hardening** (below): reconnect loop, peer-left notification, atomic register, case-insensitive email, token-based agent pairing.
 4. Remaining **Plan 3/5 minor follow-ups** below.
