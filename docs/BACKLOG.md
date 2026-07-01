@@ -4,25 +4,37 @@
 
 ## Status
 
-Milestone reached: **browser captures mouse/keyboard → data channel → Rust agent injects them locally via `enigo` (real cursor/clicks/scroll/typing on the被控端).** Superseded the earlier `echo:<msg>` milestone.
+**MVP functionally complete (macOS):** the browser shows the被控端's live macOS screen (`<video>`) AND mouse/keyboard injection works — both媒体 flows over one WebRTC PeerConnection (video track agent→web, input data channel web→agent). This is the design's MVP scope (画面传输 + 键鼠控制). Remaining work is hardening + cross-platform, not new MVP capability.
 
 | Plan | Scope | Status |
 |------|-------|--------|
 | 1 | `@rd/protocol` (TS types+validation) + `@rd/server` (Fastify+ws+sqlite: accounts/JWT, device list/pair, WS SDP/ICE relay) | ✅ merged |
 | 2a | `agent/` Rust `rd-agent` (config persist, protocol serde mirror, interactive-login provision, WebRTC answerer + data-channel echo, signaling WS loop) | ✅ merged |
 | 2b | `@rd/web` (React: login, device list, WebRTC session + echo UI), `infra/coturn`, agent bidirectional trickle ICE, server CORS | ✅ merged |
-| 3 | **Mouse/keyboard injection** (`enigo` injector thread + full `KeyboardEvent.code` keymap, macOS Accessibility check, web capture panel + event log, pre-offer ICE buffer) | ✅ done (branch `plan3-input-injection`) |
-| 4 | Screen capture + H.264 video | ⏳ (next) |
+| 3 | **Mouse/keyboard injection** (`enigo` injector thread + full `KeyboardEvent.code` keymap, macOS Accessibility check, web capture panel + event log, pre-offer ICE buffer) | ✅ merged |
+| 4 | **Screen capture + H.264 video** (ScreenCaptureKit capture + openh264 software encode behind traits, VideoPipeline thread → sendonly H264 track, web recvonly transceiver + `<video>`, macOS Screen-Recording check; test-pattern-first de-risking) | ✅ done (branch `plan4-screen-capture-video`), macOS only |
 
-Tests currently green: Node `npm test` → 57; agent `cargo test` → 23 (+1 `#[ignore]` real-injection); `npm run typecheck` clean; `cargo clippy` clean; web `@rd/web build` clean.
+Tests currently green: Node `npm test` → 59; agent `cargo test` → 33 (+2 `#[ignore]` real-hardware: SCK capture, enigo injection); `npm run typecheck` clean; `cargo clippy --all-targets` clean; web `@rd/web build` clean.
 
-Design/plan for Plan 3: `docs/superpowers/specs/2026-07-01-plan3-input-injection-design.md`, `docs/superpowers/plans/2026-07-01-plan3-input-injection.md`. Manual smoke: `docs/superpowers/plan3-input-smoke.md`.
+Design/plan for Plan 4: `docs/superpowers/specs/2026-07-02-plan4-screen-capture-video-design.md`, `docs/superpowers/plans/2026-07-02-plan4-screen-capture-video.md`. Manual smoke: `docs/superpowers/plan4-video-smoke.md` (two-stage: test pattern, then real screen).
+Plan 3 docs: `docs/superpowers/specs/2026-07-01-plan3-input-injection-design.md`, `docs/superpowers/plans/2026-07-01-plan3-input-injection.md`, `docs/superpowers/plan3-input-smoke.md`.
+Overall design: `docs/superpowers/specs/2026-07-01-remote-desktop-design.md`. E2E smoke: `docs/superpowers/plan2b-e2e-smoke.md`.
 
-Design: `docs/superpowers/specs/2026-07-01-remote-desktop-design.md`. Plans: `docs/superpowers/plans/`. E2E smoke: `docs/superpowers/plan2b-e2e-smoke.md`.
+## Next: hardening + cross-platform (no new MVP capability)
 
-## Next: Plan 4 — screen capture + H.264 video
+MVP is complete on macOS. Highest-value next steps, roughly ordered:
+1. **Plan 4 follow-ups** below (SCStream cleanup, SCK capture config, letterbox coords) — make the macOS video path production-worthy.
+2. **Cross-platform capture/encode** (Windows/Linux): implement `ScreenCapturer`/`VideoEncoder` for those platforms behind the existing traits (`scrap`/`xcap`, hardware encoders VideoToolbox/NVENC/VAAPI).
+3. **Bitrate/resolution/fps adaptation** (design §4.1 deferred): react to congestion; multi-monitor; resolution-change renegotiation.
+4. The **Plan 3 input follow-ups** below (stuck keys on release is highest-value).
 
-Replace the placeholder "remote screen" panel in `SessionView` with a real `<video>` fed by a WebRTC video track. Agent side: cross-platform capture (`scrap`/`xcap`) → H.264 encode (`openh264`) → WebRTC sample. Highest-risk item in the project (design §4.1 `capture`). The Plan 3 web capture handlers stay as-is (they already send 0..1 relative coords, so they map onto the video surface unchanged).
+## Plan 4 follow-ups (from the final whole-branch review)
+
+- **SCStream leaked per session — clean up on shutdown.** `agent/src/video/sck_capturer.rs` uses `std::mem::forget(stream)` to keep capturing; across reconnects on a long-lived agent, leaked `SCStream`s accumulate and ALL keep capturing the display simultaneously (unbounded CPU/memory). Fix: hold the stream in `SckCapturer`/the pipeline and `stop_capture()` on drop.
+- **SCK captures at native retina + native refresh.** `sck_capturer.rs` sets no `with_width/with_height` or `minimum_frame_interval`, so SCK delivers full-res frames at up to 60fps that get nearest-neighbour-resized to 720p and encoded — heavy CPU; and each `Sample.duration` is hardcoded `1/30`, a real-time/RTP-timestamp mismatch if SCK ≠ 30fps. Fix: configure capture scale + frame interval to match the pipeline's 720p/30fps.
+- **Letterbox coordinate skew.** `SessionView.tsx` `mouseCoords` maps against the `<video>` element rect, but `objectFit: contain` letterboxes a differing-aspect stream — pointer coords in the bars map out of range / with a stretch offset. Fix: map against the actual displayed video content box (account for aspect ratio and bars).
+- **`RD_VIDEO_SOURCE` test isn't serialized.** `agent/src/video/mod.rs` `testpattern_env_forces_synthetic_source` mutates the process-global env var without `#[serial]` (serial_test is already a dev-dep) — latent parallel-test flake. Annotate it.
+- **`convert.rs` robustness/coverage.** `bgra_to_yuv420(..).expect(..)` panics on a 0×0 target (unreachable at fixed 720p, but harden); the padded-source-stride resize path is correct but untested — add a padded-stride test.
 
 ## Plan 3 follow-ups (from the final whole-branch review — do before/with Plan 4)
 
@@ -71,9 +83,9 @@ Replace the placeholder "remote screen" panel in `SessionView` with a real `<vid
 3. **Install + verify:**
    ```bash
    npm install
-   npm test           # expect 57 passing
+   npm test           # expect 59 passing
    npm run typecheck  # clean
-   cargo test --manifest-path agent/Cargo.toml   # expect 23 passing +1 ignored (first build pulls webrtc-rs + enigo — slow)
+   cargo test --manifest-path agent/Cargo.toml   # expect 33 passing +2 ignored (first build pulls webrtc-rs + enigo + openh264 source + screencapturekit — slow)
    ```
 4. **Try the e2e echo:** follow `docs/superpowers/plan2b-e2e-smoke.md` (server + coturn + agent + web → browser shows `echo:hello`).
 5. **Read before coding:** the design spec, then `docs/superpowers/plans/`, then this backlog.
