@@ -1080,7 +1080,6 @@ test("agent-online → connect → sdp relayed to agent", async () => {
 - [ ] **Step 6: 实现进程入口 index.ts（把 HTTP+WS+在线表组装起来）**
 
 ```ts
-import { createServer } from "node:http";
 import { WebSocketServer } from "ws";
 import { openDb } from "./db.js";
 import { UsersRepo } from "./repo/users.js";
@@ -1097,12 +1096,11 @@ const devices = new DevicesRepo(db);
 const registry = new Registry();
 
 const app = buildApp({ users, devices, config, isOnline: (id) => registry.isOnline(id) });
-const server = createServer();
-app.server.on("request", () => {}); // Fastify 有自己的 server；见下方说明
+
+// WS 复用 Fastify 内部的 http.Server（app.server）的 upgrade 事件，无需第二个 HTTP server
 const wss = new WebSocketServer({ noServer: true });
 attachSignaling(wss, { devices, config, registry });
 
-// 把 WS upgrade 挂到 Fastify 的 server 上
 app.ready().then(() => {
   app.server.on("upgrade", (req, socket, head) => {
     wss.handleUpgrade(req, socket as any, head, (ws) => wss.emit("connection", ws, req));
@@ -1112,7 +1110,7 @@ app.ready().then(() => {
 });
 ```
 
-> 说明：Fastify 内部已持有一个 `http.Server`（`app.server`）；WS 复用它的 `upgrade` 事件，无需第二个 HTTP server。上面的 `createServer()`/`app.server.on("request")` 两行是多余的，实现时删掉，只保留 `WebSocketServer({ noServer: true })` + `app.server.on("upgrade", ...)`。
+> 说明：Fastify 内部已持有一个 `http.Server`（`app.server`）；WS 用 `noServer: true` 复用它的 `upgrade` 事件，无需第二个 HTTP server。
 
 - [ ] **Step 7: 跑全部测试确认通过**
 
