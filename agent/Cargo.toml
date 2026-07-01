@@ -33,8 +33,10 @@ openh264 = { version = "0.9", features = ["source"] }
 macos-accessibility-client = "0.0.2"
 screencapturekit = "8"
 
-# Screen capture on Windows + Linux (macOS uses ScreenCaptureKit above).
-[target.'cfg(not(target_os = "macos"))'.dependencies]
+# Screen capture on Windows (macOS uses ScreenCaptureKit above; Linux capture
+# is not wired up yet — xcap's Linux/pipewire build needs more work, so Linux
+# falls back to the test pattern for now).
+[target.'cfg(target_os = "windows")'.dependencies]
 xcap = "0.9"
 
 [dev-dependencies]
