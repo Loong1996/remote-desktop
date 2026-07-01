@@ -1,35 +1,40 @@
 # Remote Desktop — Backlog & Handoff
 
-> Durable handoff doc (in-repo, so it travels with the code). Records project status, the roadmap, all deferred/carry-over items, and how to resume on a fresh machine. Last updated: 2026-07-01.
+> Durable handoff doc (in-repo, so it travels with the code). Records project status, the roadmap, all deferred/carry-over items, and how to resume on a fresh machine. Last updated: 2026-07-02.
 
 ## Status
 
-Milestone reached: **browser ↔ Rust agent ↔ Node server exchange a data-channel `echo:<msg>` over WebRTC.**
+Milestone reached: **browser captures mouse/keyboard → data channel → Rust agent injects them locally via `enigo` (real cursor/clicks/scroll/typing on the被控端).** Superseded the earlier `echo:<msg>` milestone.
 
 | Plan | Scope | Status |
 |------|-------|--------|
 | 1 | `@rd/protocol` (TS types+validation) + `@rd/server` (Fastify+ws+sqlite: accounts/JWT, device list/pair, WS SDP/ICE relay) | ✅ merged |
 | 2a | `agent/` Rust `rd-agent` (config persist, protocol serde mirror, interactive-login provision, WebRTC answerer + data-channel echo, signaling WS loop) | ✅ merged |
 | 2b | `@rd/web` (React: login, device list, WebRTC session + echo UI), `infra/coturn`, agent bidirectional trickle ICE, server CORS | ✅ merged |
-| 3 | **Mouse/keyboard injection** (next) | ⏳ |
-| 4 | Screen capture + H.264 video | ⏳ |
+| 3 | **Mouse/keyboard injection** (`enigo` injector thread + full `KeyboardEvent.code` keymap, macOS Accessibility check, web capture panel + event log, pre-offer ICE buffer) | ✅ done (branch `plan3-input-injection`) |
+| 4 | Screen capture + H.264 video | ⏳ (next) |
 
-Tests currently green: Node `npm test` → 54; agent `cargo test` → 10; `npm run typecheck` clean; web `vite build` clean.
+Tests currently green: Node `npm test` → 57; agent `cargo test` → 23 (+1 `#[ignore]` real-injection); `npm run typecheck` clean; `cargo clippy` clean; web `@rd/web build` clean.
+
+Design/plan for Plan 3: `docs/superpowers/specs/2026-07-01-plan3-input-injection-design.md`, `docs/superpowers/plans/2026-07-01-plan3-input-injection.md`. Manual smoke: `docs/superpowers/plan3-input-smoke.md`.
 
 Design: `docs/superpowers/specs/2026-07-01-remote-desktop-design.md`. Plans: `docs/superpowers/plans/`. E2E smoke: `docs/superpowers/plan2b-e2e-smoke.md`.
 
-## Next: Plan 3 — mouse/keyboard injection
+## Next: Plan 4 — screen capture + H.264 video
 
-Reuse the SAME data channel that Plan 2b opened. The `InputEvent` type is already defined in `packages/protocol/src/input.ts` (mouse move w/ 0..1 relative coords, buttons, wheel, key down/up) with a `parseInputEvent` validator.
+Replace the placeholder "remote screen" panel in `SessionView` with a real `<video>` fed by a WebRTC video track. Agent side: cross-platform capture (`scrap`/`xcap`) → H.264 encode (`openh264`) → WebRTC sample. Highest-risk item in the project (design §4.1 `capture`). The Plan 3 web capture handlers stay as-is (they already send 0..1 relative coords, so they map onto the video surface unchanged).
 
-- **Web** (`packages/web/src/pages/SessionView.tsx` + rtc): capture mouse move/click/wheel and keyboard on the remote-view surface → serialize `InputEvent` JSON → send over the data channel.
-- **Agent** (`agent/`): new `input` module using the `enigo` crate to inject received `InputEvent`s; map 0..1 relative coords → local screen resolution; add a Rust serde mirror of `InputEvent`. Handle platform permission prompts (macOS Accessibility; Linux/Wayland limits) — detect + guide on first run.
-- **Do first (insurance before real traffic):** buffer inbound remote ICE candidates until the remote description is set — see "Known issues" #A below.
+## Plan 3 follow-ups (from the final whole-branch review — do before/with Plan 4)
+
+- **Stuck keys/buttons on release (highest value).** `packages/web/src/pages/SessionView.tsx`: if the operator holds Shift/Ctrl or a mouse button and then presses Esc, drags off the panel, or the tab loses focus, no `kup`/`mup` is sent — the modifier/button stays pressed on the被控端. Fix: track currently-pressed keys/buttons and synthesize `kup`/`mup` for all of them on blur; and/or have the agent auto-release everything when the data channel closes.
+- **Wheel `deltaMode` ignored.** Web sends raw `deltaX/deltaY`; `pixels_to_clicks` (`agent/src/input.rs`) assumes deltaMode 0 (~100px/notch). Firefox physical wheel often reports deltaMode 1 (lines, `deltaY≈±3`) → rounds to ±1 floor, losing magnitude. Fix: normalize by `deltaMode` on the web side or send `deltaMode` on the wire.
+- **Scroll direction unverified against real hardware.** Unit tests pin magnitude/sign of the mapper only; confirm browser `deltaY>0` (down) ↔ `enigo::scroll(+)` physically in the smoke run.
+- **`enigo.main_display()` queried on every `MMove`** (`agent/src/input.rs`). Fine at rAF-coalesced ~60/s, but caching display size avoids a syscall per move. Trivial.
 
 ## Deferred / carry-over items (fix opportunistically)
 
-### Must consider before Plan 3 traffic
-- **A. Pre-offer ICE candidates dropped** — `agent/src/signaling.rs`: a remote `ice` arriving before the offer's remote description is set fails `add_remote_ice` and is dropped (log-and-continue). Benign for the ordered single-WS echo flow, but buffer-until-remote-desc-set is cheap insurance once the channel carries real input.
+### Done in Plan 3
+- ~~**A. Pre-offer ICE candidates dropped**~~ — FIXED: `agent/src/webrtc_peer.rs` now buffers remote candidates in an `IceBuffer` until the remote description is set, then flushes them in order (unit + integration tested).
 
 ### Server (`packages/server`)
 - `/register` `findByEmail`→`create` not atomic → concurrent duplicate email surfaces a raw 500 instead of 409. Wrap `create` in try/catch mapping the SQLite UNIQUE error → 409.
@@ -66,9 +71,9 @@ Reuse the SAME data channel that Plan 2b opened. The `InputEvent` type is alread
 3. **Install + verify:**
    ```bash
    npm install
-   npm test           # expect 54 passing
+   npm test           # expect 57 passing
    npm run typecheck  # clean
-   cargo test --manifest-path agent/Cargo.toml   # expect 10 passing (first build pulls webrtc-rs — slow)
+   cargo test --manifest-path agent/Cargo.toml   # expect 23 passing +1 ignored (first build pulls webrtc-rs + enigo — slow)
    ```
 4. **Try the e2e echo:** follow `docs/superpowers/plan2b-e2e-smoke.md` (server + coturn + agent + web → browser shows `echo:hello`).
 5. **Read before coding:** the design spec, then `docs/superpowers/plans/`, then this backlog.
