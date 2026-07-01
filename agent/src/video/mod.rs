@@ -5,11 +5,25 @@ pub mod openh264_encoder;
 pub mod pipeline;
 pub mod testpattern;
 
-/// Select the capture source. Until the SckCapturer lands (Task 5) this is
-/// always the test pattern; afterwards `RD_VIDEO_SOURCE=screen` (the default)
-/// selects real capture and `testpattern` forces the synthetic source.
+#[cfg(target_os = "macos")]
+pub mod sck_capturer;
+
+/// Select the capture source by `RD_VIDEO_SOURCE`: `testpattern` → synthetic,
+/// anything else (default `screen`) → real capture where available.
 pub fn make_source(w: u32, h: u32, fps: u32) -> Box<dyn ScreenCapturer> {
-    Box::new(testpattern::TestPatternSource { width: w, height: h, fps })
+    let want = std::env::var("RD_VIDEO_SOURCE").unwrap_or_else(|_| "screen".to_string());
+    if want == "testpattern" {
+        return Box::new(testpattern::TestPatternSource { width: w, height: h, fps });
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Box::new(sck_capturer::SckCapturer { fps })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        tracing::warn!("no screen capture backend on this platform; using test pattern");
+        Box::new(testpattern::TestPatternSource { width: w, height: h, fps })
+    }
 }
 
 /// One captured frame of raw BGRA8888 pixels. `stride` is bytes per row
@@ -55,4 +69,19 @@ pub trait VideoEncoder: Send {
 /// a recorder in tests).
 pub trait SampleSink: Send + Sync {
     fn write(&self, sample: EncodedSample);
+}
+
+#[cfg(test)]
+mod source_selection_tests {
+    #[test]
+    fn testpattern_env_forces_synthetic_source() {
+        // With RD_VIDEO_SOURCE=testpattern, make_source must not touch the OS.
+        std::env::set_var("RD_VIDEO_SOURCE", "testpattern");
+        let mut src = super::make_source(64, 48, 30);
+        let (tx, rx) = std::sync::mpsc::channel();
+        src.start(tx).unwrap();
+        let f = rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+        assert_eq!((f.width, f.height), (64, 48));
+        std::env::remove_var("RD_VIDEO_SOURCE");
+    }
 }

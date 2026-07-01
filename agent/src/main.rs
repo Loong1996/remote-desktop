@@ -10,6 +10,10 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!("continuing without input permission; session will connect but injection is disabled");
     }
 
+    if !rd_agent::permission::check_screen_recording_permission() {
+        tracing::warn!("continuing without screen-recording permission; video will be blank");
+    }
+
     let cfg = match AgentConfig::load()? {
         Some(c) => {
             tracing::info!("loaded config for device {}", c.device_id);
