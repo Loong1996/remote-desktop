@@ -30,3 +30,8 @@ same PeerConnection. Fixed 720p/30fps/3Mbps (no adaptation yet).
 - **Capture stops on disconnect:** close the browser tab / disconnect → the agent stops capturing (no lingering CPU), and reconnecting does not accumulate capture load.
 - **No stuck keys:** hold Shift (or a mouse button), then press Esc / move the pointer off the video / close the tab → the被控端 releases it (no stuck modifier/button).
 - **Letterbox coords:** if the remote aspect ratio differs from the `<video>` box, the cursor tracks the visible image; positions over the black bars clamp to the edge.
+
+## Reliability (Plan 6) — what to verify
+- **Agent auto-reconnect:** with a session idle, restart the signaling server (or briefly drop the network). The agent logs `signaling disconnected; reconnecting in …` and comes back `agent online` within the backoff window (≤ 30s); the device returns to online in the web device list and a new session can be started. No manual agent restart needed.
+- **Peer-left both ways:** close the browser tab mid-session → the agent logs `peer left session …; released` (and the被控端 releases any held keys). Kill/disconnect the agent mid-session → the web session flips from Connected to Disconnected instead of hanging.
+- **Fatal stop:** an invalid device token logs `agent stopped: device token rejected …` and the agent exits (re-pair needed) rather than looping forever.
