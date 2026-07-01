@@ -12,34 +12,38 @@
 | 2a | `agent/` Rust `rd-agent` (config persist, protocol serde mirror, interactive-login provision, WebRTC answerer + data-channel echo, signaling WS loop) | ✅ merged |
 | 2b | `@rd/web` (React: login, device list, WebRTC session + echo UI), `infra/coturn`, agent bidirectional trickle ICE, server CORS | ✅ merged |
 | 3 | **Mouse/keyboard injection** (`enigo` injector thread + full `KeyboardEvent.code` keymap, macOS Accessibility check, web capture panel + event log, pre-offer ICE buffer) | ✅ merged |
-| 4 | **Screen capture + H.264 video** (ScreenCaptureKit capture + openh264 software encode behind traits, VideoPipeline thread → sendonly H264 track, web recvonly transceiver + `<video>`, macOS Screen-Recording check; test-pattern-first de-risking) | ✅ done (branch `plan4-screen-capture-video`), macOS only |
+| 4 | **Screen capture + H.264 video** (ScreenCaptureKit capture + openh264 software encode behind traits, VideoPipeline thread → sendonly H264 track, web recvonly transceiver + `<video>`, macOS Screen-Recording check; test-pattern-first de-risking) | ✅ merged, macOS only |
+| 5 | **macOS video hardening** (SckCapturer owns/stops its SCStream on session end + 720p/30fps capture; agent+web stuck-key release; letterbox coord mapping; convert 0×0 guard) | ✅ done (branch `plan5-macos-video-hardening`) |
 
-Tests currently green: Node `npm test` → 59; agent `cargo test` → 33 (+2 `#[ignore]` real-hardware: SCK capture, enigo injection); `npm run typecheck` clean; `cargo clippy --all-targets` clean; web `@rd/web build` clean.
+Tests currently green: Node `npm test` → 64; agent `cargo test` → 37 (+2 `#[ignore]` real-hardware: SCK capture, enigo injection); `npm run typecheck` clean; `cargo clippy --all-targets` clean; web `@rd/web build` clean.
+
+Plan 5 docs: `docs/superpowers/specs/2026-07-02-plan5-macos-video-hardening-design.md`, `docs/superpowers/plans/2026-07-02-plan5-macos-video-hardening.md`; smoke notes appended to `plan4-video-smoke.md`.
 
 Design/plan for Plan 4: `docs/superpowers/specs/2026-07-02-plan4-screen-capture-video-design.md`, `docs/superpowers/plans/2026-07-02-plan4-screen-capture-video.md`. Manual smoke: `docs/superpowers/plan4-video-smoke.md` (two-stage: test pattern, then real screen).
 Plan 3 docs: `docs/superpowers/specs/2026-07-01-plan3-input-injection-design.md`, `docs/superpowers/plans/2026-07-01-plan3-input-injection.md`, `docs/superpowers/plan3-input-smoke.md`.
 Overall design: `docs/superpowers/specs/2026-07-01-remote-desktop-design.md`. E2E smoke: `docs/superpowers/plan2b-e2e-smoke.md`.
 
-## Next: hardening + cross-platform (no new MVP capability)
+## Next: cross-platform (macOS MVP done + hardened)
 
-MVP is complete on macOS. Highest-value next steps, roughly ordered:
-1. **Plan 4 follow-ups** below (SCStream cleanup, SCK capture config, letterbox coords) — make the macOS video path production-worthy.
-2. **Cross-platform capture/encode** (Windows/Linux): implement `ScreenCapturer`/`VideoEncoder` for those platforms behind the existing traits (`scrap`/`xcap`, hardware encoders VideoToolbox/NVENC/VAAPI).
-3. **Bitrate/resolution/fps adaptation** (design §4.1 deferred): react to congestion; multi-monitor; resolution-change renegotiation.
-4. The **Plan 3 input follow-ups** below (stuck keys on release is highest-value).
+macOS remote access is complete and hardened (Plans 3–5). Next major thrust:
+1. **Cross-platform capture/encode** (Windows/Linux): implement `ScreenCapturer`/`VideoEncoder` for those platforms behind the existing traits (`scrap`/`xcap`; hardware encoders VideoToolbox/NVENC/VAAPI, or reuse openh264 software first). This is the headline next Plan.
+2. **Bitrate/resolution/fps adaptation** (design §4.1 deferred): react to congestion; multi-monitor; resolution-change renegotiation.
+3. **Server/pairing hardening** (below): reconnect loop, peer-left notification, atomic register, case-insensitive email, token-based agent pairing.
+4. Remaining **Plan 3/5 minor follow-ups** below.
 
-## Plan 4 follow-ups (from the final whole-branch review)
+## Resolved in Plan 5 (macOS video hardening)
+- ~~SCStream leaked per session~~ — FIXED: `SckCapturer` owns its `SCStream` on a dedicated thread and `stop_capture()`s on `Drop`.
+- ~~SCK native retina + 60fps~~ — FIXED: captures at 1280×720/30fps at the source (`with_width/with_height/with_fps`).
+- ~~Letterbox coordinate skew~~ — FIXED: `contentRect` maps pointer to the `object-fit: contain` content box.
+- ~~`RD_VIDEO_SOURCE` test not serialized~~ — FIXED: `#[serial]`.
+- ~~convert 0×0 panic / padded-stride untested~~ — FIXED: 0×0 guard + strengthened padded-stride test.
+- ~~Stuck keys/buttons on release~~ — FIXED: web releases held keys/buttons on blur/mouseleave/unmount; agent releases all held on input-channel close.
 
-- **SCStream leaked per session — clean up on shutdown.** `agent/src/video/sck_capturer.rs` uses `std::mem::forget(stream)` to keep capturing; across reconnects on a long-lived agent, leaked `SCStream`s accumulate and ALL keep capturing the display simultaneously (unbounded CPU/memory). Fix: hold the stream in `SckCapturer`/the pipeline and `stop_capture()` on drop.
-- **SCK captures at native retina + native refresh.** `sck_capturer.rs` sets no `with_width/with_height` or `minimum_frame_interval`, so SCK delivers full-res frames at up to 60fps that get nearest-neighbour-resized to 720p and encoded — heavy CPU; and each `Sample.duration` is hardcoded `1/30`, a real-time/RTP-timestamp mismatch if SCK ≠ 30fps. Fix: configure capture scale + frame interval to match the pipeline's 720p/30fps.
-- **Letterbox coordinate skew.** `SessionView.tsx` `mouseCoords` maps against the `<video>` element rect, but `objectFit: contain` letterboxes a differing-aspect stream — pointer coords in the bars map out of range / with a stretch offset. Fix: map against the actual displayed video content box (account for aspect ratio and bars).
-- **`RD_VIDEO_SOURCE` test isn't serialized.** `agent/src/video/mod.rs` `testpattern_env_forces_synthetic_source` mutates the process-global env var without `#[serial]` (serial_test is already a dev-dep) — latent parallel-test flake. Annotate it.
-- **`convert.rs` robustness/coverage.** `bgra_to_yuv420(..).expect(..)` panics on a 0×0 target (unreachable at fixed 720p, but harden); the padded-source-stride resize path is correct but untested — add a padded-stride test.
-
-## Plan 3 follow-ups (from the final whole-branch review — do before/with Plan 4)
-
-- **Stuck keys/buttons on release (highest value).** `packages/web/src/pages/SessionView.tsx`: if the operator holds Shift/Ctrl or a mouse button and then presses Esc, drags off the panel, or the tab loses focus, no `kup`/`mup` is sent — the modifier/button stays pressed on the被控端. Fix: track currently-pressed keys/buttons and synthesize `kup`/`mup` for all of them on blur; and/or have the agent auto-release everything when the data channel closes.
+## Remaining minor follow-ups
 - **Wheel `deltaMode` ignored.** Web sends raw `deltaX/deltaY`; `pixels_to_clicks` (`agent/src/input.rs`) assumes deltaMode 0 (~100px/notch). Firefox physical wheel often reports deltaMode 1 (lines, `deltaY≈±3`) → rounds to ±1 floor, losing magnitude. Fix: normalize by `deltaMode` on the web side or send `deltaMode` on the wire.
+- **`rect.width===0` → NaN coords** (`SessionView.tsx`): if the video element is unlaid-out while `videoWidth>0`, `mouseCoords` divides by zero. Pre-existing; guard it.
+- **English/Chinese comment mix** in a few Rust files ("被控端") — cosmetic cleanup.
+- **No RTL component tests** for SessionView capture/blur wiring — add a React Testing Library harness.
 - **Scroll direction unverified against real hardware.** Unit tests pin magnitude/sign of the mapper only; confirm browser `deltaY>0` (down) ↔ `enigo::scroll(+)` physically in the smoke run.
 - **`enigo.main_display()` queried on every `MMove`** (`agent/src/input.rs`). Fine at rAF-coalesced ~60/s, but caching display size avoids a syscall per move. Trivial.
 
@@ -83,9 +87,9 @@ MVP is complete on macOS. Highest-value next steps, roughly ordered:
 3. **Install + verify:**
    ```bash
    npm install
-   npm test           # expect 59 passing
+   npm test           # expect 64 passing
    npm run typecheck  # clean
-   cargo test --manifest-path agent/Cargo.toml   # expect 33 passing +2 ignored (first build pulls webrtc-rs + enigo + openh264 source + screencapturekit — slow)
+   cargo test --manifest-path agent/Cargo.toml   # expect 37 passing +2 ignored (first build pulls webrtc-rs + enigo + openh264 source + screencapturekit — slow)
    ```
 4. **Try the e2e echo:** follow `docs/superpowers/plan2b-e2e-smoke.md` (server + coturn + agent + web → browser shows `echo:hello`).
 5. **Read before coding:** the design spec, then `docs/superpowers/plans/`, then this backlog.
