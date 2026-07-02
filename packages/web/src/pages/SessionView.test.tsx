@@ -6,8 +6,13 @@ import { SessionView } from "./SessionView.js";
 // Share state with the hoisted mock: capture the opts passed to connectSession
 // so the test can drive connection state without a real WebRTC stack.
 const h = vi.hoisted(() => ({
-  opts: null as null | { onState: (s: string) => void },
-  session: { close: vi.fn(), sendInput: vi.fn(), getStats: vi.fn().mockResolvedValue(null) },
+  opts: null as null | { onState: (s: string) => void; onClipboard?: (t: string) => void },
+  session: {
+    close: vi.fn(),
+    sendInput: vi.fn(),
+    getStats: vi.fn().mockResolvedValue(null),
+    sendControl: vi.fn(),
+  },
 }));
 
 vi.mock("../rtc.js", async (importOriginal) => {
@@ -102,5 +107,12 @@ describe("SessionView fullscreen", () => {
     expect(screen.getByTestId("stats-hud")).toBeTruthy();
     fireEvent.click(screen.getByTestId("stats-btn"));
     expect(screen.queryByTestId("stats-hud")).toBeNull();
+  });
+
+  it("sends a quality control message when a preset is chosen", () => {
+    render(<SessionView token="t" device={device} onExit={() => {}} />);
+    act(() => h.opts!.onState("connected"));
+    fireEvent.change(screen.getByTestId("quality-select"), { target: { value: "6000000" } });
+    expect(h.session.sendControl).toHaveBeenCalledWith({ t: "quality", bitrateBps: 6000000 });
   });
 });

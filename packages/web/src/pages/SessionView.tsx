@@ -19,6 +19,12 @@ export interface SessionViewProps {
   onExit: () => void;
 }
 
+const QUALITY_PRESETS = [
+  { label: "流畅", bps: 1_500_000 },
+  { label: "均衡", bps: 3_000_000 },
+  { label: "高清", bps: 6_000_000 },
+];
+
 const STATE_LABEL: Record<ConnectionState, string> = {
   connecting: "Connecting…",
   signaling: "Negotiating…",
@@ -69,6 +75,7 @@ export function SessionView({ token, device, onExit }: SessionViewProps) {
   const [isMaximized, setIsMaximized] = useState(false);
   const [showStats, setShowStats] = useState(false);
   const [stats, setStats] = useState<VideoStats | null>(null);
+  const [bitrate, setBitrate] = useState(3_000_000);
   const statsSample = useRef<StatsSample | null>(null);
   const sessionRef = useRef<Session | null>(null);
   const surfaceRef = useRef<HTMLVideoElement | null>(null);
@@ -116,6 +123,11 @@ export function SessionView({ token, device, onExit }: SessionViewProps) {
     },
     [emit],
   );
+
+  const onQuality = useCallback((bps: number) => {
+    setBitrate(bps);
+    sessionRef.current?.sendControl({ t: "quality", bitrateBps: bps });
+  }, []);
 
   // Release every currently-held key/button (e.g. on blur/mouse-leave/unmount)
   // so nothing sticks down on the remote side once capture is interrupted.
@@ -256,6 +268,17 @@ export function SessionView({ token, device, onExit }: SessionViewProps) {
           <button onClick={() => setShowStats((v) => !v)} disabled={!connected} data-testid="stats-btn">
             {showStats ? "Hide stats" : "📊 Stats"}
           </button>
+          <select
+            data-testid="quality-select"
+            value={bitrate}
+            disabled={!connected}
+            onChange={(e) => onQuality(Number(e.target.value))}
+            style={{ fontSize: 12 }}
+          >
+            {QUALITY_PRESETS.map((q) => (
+              <option key={q.bps} value={q.bps}>{q.label}</option>
+            ))}
+          </select>
           <span
             aria-label={STATE_LABEL[state]}
             title={STATE_LABEL[state]}
