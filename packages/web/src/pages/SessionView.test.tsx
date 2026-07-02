@@ -183,6 +183,22 @@ describe("SessionView fullscreen", () => {
     }
   });
 
+  it("choosing a preset cancels a pending debounced slider send", () => {
+    vi.useFakeTimers();
+    try {
+      render(<SessionView token="t" device={device} onExit={() => {}} />);
+      act(() => h.opts!.onState("connected"));
+      const slider = screen.getByTestId("bitrate-slider") as HTMLInputElement;
+      fireEvent.change(slider, { target: { value: "4750000" } });
+      fireEvent.change(screen.getByTestId("quality-select"), { target: { value: "6000000" } });
+      act(() => vi.advanceTimersByTime(250));
+      expect(h.session.sendControl).toHaveBeenCalledWith({ t: "quality", bitrateBps: 6000000 });
+      expect(h.session.sendControl).not.toHaveBeenCalledWith({ t: "quality", bitrateBps: 4750000 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("choosing a preset moves the slider to the preset bitrate", () => {
     render(<SessionView token="t" device={device} onExit={() => {}} />);
     act(() => h.opts!.onState("connected"));

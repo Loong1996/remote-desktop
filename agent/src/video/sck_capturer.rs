@@ -12,8 +12,8 @@ use screencapturekit::{
     },
 };
 
-/// Captures the main display via ScreenCaptureKit at 1280x720 / 30fps,
-/// delivering BGRA `Frame`s. The `SCStream` is created and owned on a dedicated
+/// Captures the main display via ScreenCaptureKit at a caller-chosen size and
+/// fps, delivering BGRA `Frame`s. The `SCStream` is created and owned on a dedicated
 /// thread (SCStream is not `Send`); dropping the capturer signals that thread to
 /// `stop_capture()` and release the stream — no per-session leak.
 pub struct SckCapturer {

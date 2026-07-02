@@ -148,6 +148,10 @@ export function SessionView({ token, device, onExit }: SessionViewProps) {
   );
 
   const onQuality = useCallback((bps: number) => {
+    if (sliderTimer.current !== null) {
+      window.clearTimeout(sliderTimer.current);
+      sliderTimer.current = null;
+    }
     setBitrate(bps);
     sessionRef.current?.sendControl({ t: "quality", bitrateBps: bps });
   }, []);
