@@ -47,6 +47,26 @@ describe("SessionView fullscreen", () => {
     expect(video.requestFullscreen).toHaveBeenCalledTimes(1);
   });
 
+  it("fills the browser viewport (CSS overlay) without the Fullscreen API", () => {
+    render(<SessionView token="t" device={device} onExit={() => {}} />);
+    act(() => h.opts!.onState("connected"));
+    const btn = screen.getByTestId("maximize-btn") as HTMLButtonElement;
+    const video = screen.getByTestId("remote-surface") as HTMLVideoElement;
+
+    expect(btn.disabled).toBe(false);
+    expect(screen.queryByTestId("maximize-exit")).toBeNull();
+    expect(video.style.position).not.toBe("fixed");
+
+    fireEvent.click(btn); // enter fill-window
+    expect(video.style.position).toBe("fixed"); // overlay, not OS fullscreen
+    expect(video.requestFullscreen).not.toHaveBeenCalled();
+    expect(screen.getByTestId("maximize-exit")).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId("maximize-exit")); // exit
+    expect(video.style.position).not.toBe("fixed");
+    expect(screen.queryByTestId("maximize-exit")).toBeNull();
+  });
+
   it("reflects fullscreen state in the button label", () => {
     render(<SessionView token="t" device={device} onExit={() => {}} />);
     act(() => h.opts!.onState("connected"));
