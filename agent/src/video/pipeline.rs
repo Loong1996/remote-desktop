@@ -55,6 +55,11 @@ impl VideoPipeline {
                     match cmd {
                         PipelineCmd::Bitrate(bps) => encoder.set_bitrate(bps),
                         PipelineCmd::Resolution(w, h) => {
+                            // Already capturing at this size (e.g. a state re-sync
+                            // on control-channel open): skip the pointless swap.
+                            if w as usize == dst_w && h as usize == dst_h {
+                                continue;
+                            }
                             // Drop the old capturer first (stops its stream); a
                             // fresh channel discards stale frames at the old size.
                             let old = (dst_w as u32, dst_h as u32);
@@ -210,5 +215,27 @@ mod cmd_tests {
         assert!(wait_until(2000, || started.lock().unwrap().len() >= 2), "factory not invoked");
         assert_eq!(started.lock().unwrap()[1], (4, 4));
         assert!(wait_until(2000, || events.lock().unwrap().contains(&Ev::Reset)), "encoder not reset");
+    }
+
+    #[test]
+    fn same_size_resolution_cmd_is_a_noop() {
+        let started = Arc::new(Mutex::new(Vec::new()));
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let (tx, rx) = std::sync::mpsc::channel::<PipelineCmd>();
+        let st = started.clone();
+        let _p = VideoPipeline::start(
+            Box::new(LoopingSource { w: 2, h: 2, started: started.clone() }),
+            Box::new(RecordingEncoder { events: events.clone() }),
+            Arc::new(NullSink), 2, 2, 60, rx,
+            Box::new(move |w, h| Box::new(LoopingSource { w, h, started: st.clone() })),
+        );
+        assert!(wait_until(2000, || !started.lock().unwrap().is_empty()));
+        // Requesting the size we are already capturing at must NOT restart the
+        // capturer (state re-syncs on control-channel open would otherwise stall
+        // the video for no reason) nor reset the encoder.
+        tx.send(PipelineCmd::Resolution(2, 2)).unwrap();
+        std::thread::sleep(Duration::from_millis(300)); // several frame cycles
+        assert_eq!(started.lock().unwrap().len(), 1, "capturer was restarted");
+        assert!(!events.lock().unwrap().contains(&Ev::Reset), "encoder was reset");
     }
 }

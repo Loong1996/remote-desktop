@@ -11,6 +11,7 @@ pub struct Openh264Encoder {
     fps: f32,
     bitrate_bps: u32,
     force_idr_next: bool,
+    needs_rebuild: bool,
 }
 
 impl Openh264Encoder {
@@ -23,6 +24,7 @@ impl Openh264Encoder {
             fps,
             bitrate_bps,
             force_idr_next: false,
+            needs_rebuild: false,
         })
     }
 
@@ -36,6 +38,15 @@ impl Openh264Encoder {
 
 impl VideoEncoder for Openh264Encoder {
     fn encode(&mut self, frame: &I420, force_idr: bool) -> anyhow::Result<EncodedSample> {
+        // A pending reset() rebuild happens here, so a stale codec is never fed
+        // frames at new dimensions: if the rebuild fails the frame errors out
+        // (caught + logged by the pipeline) instead of reaching the old encoder.
+        if self.needs_rebuild {
+            self.encoder = Self::build_encoder(self.bitrate_bps, self.fps)?;
+            self.needs_rebuild = false;
+            // A fresh encoder must open with a keyframe so the decoder re-syncs.
+            self.force_idr_next = true;
+        }
         let idr = force_idr || self.force_idr_next;
         if idr {
             self.encoder.force_intra_frame();
@@ -68,14 +79,10 @@ impl VideoEncoder for Openh264Encoder {
     }
 
     fn reset(&mut self) {
-        match Self::build_encoder(self.bitrate_bps, self.fps) {
-            Ok(enc) => {
-                self.encoder = enc;
-                // A fresh encoder must open with a keyframe so the decoder re-syncs.
-                self.force_idr_next = true;
-            }
-            Err(e) => tracing::warn!("encoder reset failed, keeping current encoder: {e}"),
-        }
+        // Defer the rebuild to the next encode(): it can propagate a rebuild
+        // failure as a per-frame error, guaranteeing the old codec never sees
+        // frames at the new dimensions.
+        self.needs_rebuild = true;
     }
 }
 
