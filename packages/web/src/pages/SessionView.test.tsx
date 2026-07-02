@@ -153,4 +153,13 @@ describe("SessionView fullscreen", () => {
     act(() => h.opts!.onClipboard!("world"));
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith("world");
   });
+
+  it("sends a resolution message when the preset changes, default hd", () => {
+    render(<SessionView token="t" device={device} onExit={() => {}} />);
+    act(() => h.opts!.onState("connected"));
+    const sel = screen.getByTestId("resolution-select") as HTMLSelectElement;
+    expect(sel.value).toBe("hd");
+    fireEvent.change(sel, { target: { value: "native" } });
+    expect(h.session.sendControl).toHaveBeenCalledWith({ t: "resolution", preset: "native" });
+  });
 });

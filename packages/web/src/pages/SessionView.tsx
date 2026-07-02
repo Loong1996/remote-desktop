@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Device, InputEvent } from "@rd/protocol";
+import type { Device, InputEvent, ResolutionPreset } from "@rd/protocol";
 import { API_BASE } from "../api.js";
 import { clipboardToSend, type ClipMode } from "../clipboard.js";
 import { COMBOS, comboEvents } from "../combos.js";
@@ -29,6 +29,12 @@ const QUALITY_PRESETS = [
   { label: "高清", bps: 6_000_000 },
   { label: "超清", bps: 10_000_000 },
   { label: "原画", bps: 20_000_000 },
+];
+
+const RESOLUTION_PRESETS: { label: string; preset: ResolutionPreset }[] = [
+  { label: "流畅 720p", preset: "sd" },
+  { label: "高清", preset: "hd" },
+  { label: "视网膜", preset: "native" },
 ];
 
 const STATE_LABEL: Record<ConnectionState, string> = {
@@ -82,6 +88,7 @@ export function SessionView({ token, device, onExit }: SessionViewProps) {
   const [showStats, setShowStats] = useState(false);
   const [stats, setStats] = useState<VideoStats | null>(null);
   const [bitrate, setBitrate] = useState(3_000_000);
+  const [resolution, setResolution] = useState<ResolutionPreset>("hd");
   const [clipMode, setClipMode] = useState<ClipMode>("off");
   const lastClip = useRef<string>("");
   const statsSample = useRef<StatsSample | null>(null);
@@ -141,6 +148,11 @@ export function SessionView({ token, device, onExit }: SessionViewProps) {
   const onQuality = useCallback((bps: number) => {
     setBitrate(bps);
     sessionRef.current?.sendControl({ t: "quality", bitrateBps: bps });
+  }, []);
+
+  const onResolution = useCallback((preset: ResolutionPreset) => {
+    setResolution(preset);
+    sessionRef.current?.sendControl({ t: "resolution", preset });
   }, []);
 
   const onClipModeChange = useCallback((mode: ClipMode) => {
@@ -323,6 +335,17 @@ export function SessionView({ token, device, onExit }: SessionViewProps) {
           <button onClick={() => setShowStats((v) => !v)} disabled={!connected} data-testid="stats-btn">
             {showStats ? "Hide stats" : "📊 Stats"}
           </button>
+          <select
+            data-testid="resolution-select"
+            value={resolution}
+            disabled={!connected}
+            onChange={(e) => onResolution(e.target.value as ResolutionPreset)}
+            style={{ fontSize: 12 }}
+          >
+            {RESOLUTION_PRESETS.map((r) => (
+              <option key={r.preset} value={r.preset}>{r.label}</option>
+            ))}
+          </select>
           <select
             data-testid="quality-select"
             value={bitrate}
