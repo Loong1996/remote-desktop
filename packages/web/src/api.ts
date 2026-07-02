@@ -1,7 +1,30 @@
 import type { Device } from "@rd/protocol";
 
-/** Server base URL; override with VITE_SERVER_URL at build/dev time. */
-export const API_BASE: string = import.meta.env.VITE_SERVER_URL ?? "http://127.0.0.1:8080";
+/**
+ * Resolve the API/signaling server base URL.
+ *
+ * Priority: explicit `VITE_SERVER_URL` build-time override → else, in a browser,
+ * the same host that served the page on the server port (`VITE_SERVER_PORT`,
+ * default 5181). Deriving from the page host means no specific IP/hostname is
+ * baked in: the app works unchanged over LAN, a public IP, or a changed IP.
+ * Falls back to localhost for non-browser (test/SSR) contexts.
+ */
+export function deriveApiBase(
+  env: { VITE_SERVER_URL?: string; VITE_SERVER_PORT?: string },
+  loc?: { protocol: string; hostname: string },
+): string {
+  if (env.VITE_SERVER_URL) return env.VITE_SERVER_URL;
+  if (loc?.hostname) {
+    return `${loc.protocol}//${loc.hostname}:${env.VITE_SERVER_PORT ?? "5181"}`;
+  }
+  return "http://127.0.0.1:8080";
+}
+
+/** Server base URL. See `deriveApiBase`. */
+export const API_BASE: string = deriveApiBase(
+  import.meta.env,
+  typeof window !== "undefined" ? window.location : undefined,
+);
 
 export interface PairResult {
   deviceId: string;

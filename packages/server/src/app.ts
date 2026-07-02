@@ -10,13 +10,17 @@ export interface AppDeps { users: UsersRepo; devices: DevicesRepo; config: Confi
 
 export function buildApp(deps: AppDeps): FastifyInstance {
   const app = Fastify({ logger: false });
-  // Allow the Vite dev server (and any localhost port) to call the API from the browser,
-  // plus any explicit origins configured via CORS_ORIGINS (e.g. a LAN address when serving
-  // the web app to other machines). register() is queued and applied on ready(); app.inject()
-  // awaits ready(), so this takes effect without buildApp needing to be async.
-  app.register(cors, {
-    origin: [/^http:\/\/localhost:\d+$/, /^http:\/\/127\.0\.0\.1:\d+$/, ...(deps.config.corsOrigins ?? [])],
-  });
+  // CORS origins. By default allow the Vite dev server (any localhost/127.0.0.1
+  // port) plus any explicit origins from CORS_ORIGINS (e.g. a LAN or public
+  // address when serving the web app to other machines). A single "*" entry
+  // disables the allowlist entirely (reflect any origin) — for serving to
+  // browsers on changing/unknown addresses. register() is queued and applied on
+  // ready(); app.inject() awaits ready(), so this needs no async buildApp.
+  const extra = deps.config.corsOrigins ?? [];
+  const origin = extra.includes("*")
+    ? true
+    : [/^http:\/\/localhost:\d+$/, /^http:\/\/127\.0\.0\.1:\d+$/, ...extra];
+  app.register(cors, { origin });
   registerAuthRoutes(app, deps.users, deps.config.jwtSecret);
   registerDeviceRoutes(app, deps.devices, deps.config.jwtSecret, deps.isOnline);
   return app;

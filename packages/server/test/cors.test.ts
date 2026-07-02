@@ -59,3 +59,14 @@ test("does not allow an origin that is neither localhost nor configured", async 
   });
   expect(res.headers["access-control-allow-origin"]).toBeUndefined();
 });
+
+test("CORS_ORIGINS='*' reflects any origin (no allowlist)", async () => {
+  const openApp = makeApp(["*"]);
+  const res = await openApp.inject({
+    method: "POST",
+    url: "/login",
+    headers: { origin: "http://anything.example:9999" },
+    payload: { email: "a@b.com", password: "pw123456" },
+  });
+  expect(res.headers["access-control-allow-origin"]).toBe("http://anything.example:9999");
+});

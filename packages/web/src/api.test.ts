@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { register, login, listDevices, pairDevice, API_BASE } from "./api.js";
+import { register, login, listDevices, pairDevice, API_BASE, deriveApiBase } from "./api.js";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -18,9 +18,30 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("api base url", () => {
-  it("defaults to 127.0.0.1:8080 when VITE_SERVER_URL is unset", () => {
-    // no VITE_SERVER_URL set in the test env
+describe("deriveApiBase", () => {
+  const loc = { protocol: "https:", hostname: "example.test" };
+
+  it("uses VITE_SERVER_URL verbatim when set (wins over page host)", () => {
+    expect(deriveApiBase({ VITE_SERVER_URL: "http://198.51.100.7:5181" }, loc))
+      .toBe("http://198.51.100.7:5181");
+  });
+
+  it("falls back to the page host + server port when VITE_SERVER_URL is unset", () => {
+    // No baked-in IP: works from whatever address served the page (LAN, public, changed).
+    expect(deriveApiBase({}, loc)).toBe("https://example.test:5181");
+    expect(deriveApiBase({}, { protocol: "http:", hostname: "192.168.5.122" }))
+      .toBe("http://192.168.5.122:5181");
+  });
+
+  it("honors VITE_SERVER_PORT for the page-host fallback", () => {
+    expect(deriveApiBase({ VITE_SERVER_PORT: "9000" }, loc)).toBe("https://example.test:9000");
+  });
+
+  it("falls back to localhost outside a browser (no location)", () => {
+    expect(deriveApiBase({}, undefined)).toBe("http://127.0.0.1:8080");
+  });
+
+  it("API_BASE resolves to the test-pinned VITE_SERVER_URL", () => {
     expect(API_BASE).toBe("http://127.0.0.1:8080");
   });
 });
