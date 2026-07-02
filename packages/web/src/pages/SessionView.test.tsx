@@ -79,4 +79,17 @@ describe("SessionView fullscreen", () => {
     act(() => document.dispatchEvent(new Event("fullscreenchange")));
     expect(btn.textContent).toContain("Exit fullscreen");
   });
+
+  it("sends a chord as kdown…kup in reverse on combo click", () => {
+    render(<SessionView token="t" device={device} onExit={() => {}} />);
+    act(() => h.opts!.onState("connected"));
+    fireEvent.click(screen.getByTestId("combo-Copy"));
+    const sent = h.session.sendInput.mock.calls.map((c) => c[0]);
+    expect(sent).toEqual([
+      { t: "kdown", code: "MetaLeft" },
+      { t: "kdown", code: "KeyC" },
+      { t: "kup", code: "KeyC" },
+      { t: "kup", code: "MetaLeft" },
+    ]);
+  });
 });

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Device, InputEvent } from "@rd/protocol";
 import { API_BASE } from "../api.js";
+import { COMBOS, comboEvents } from "../combos.js";
 import {
   connectSession,
   contentRect,
@@ -104,6 +105,13 @@ export function SessionView({ token, device, onExit }: SessionViewProps) {
     sessionRef.current?.sendInput(ev);
     setLog((prev) => [describe(ev), ...prev].slice(0, 20));
   }, []);
+
+  const sendCombo = useCallback(
+    (codes: string[]) => {
+      for (const ev of comboEvents(codes)) emit(ev);
+    },
+    [emit],
+  );
 
   // Release every currently-held key/button (e.g. on blur/mouse-leave/unmount)
   // so nothing sticks down on the remote side once capture is interrupted.
@@ -239,6 +247,23 @@ export function SessionView({ token, device, onExit }: SessionViewProps) {
       <p style={{ color: "#888" }}>
         Click the panel to capture — mouse & keyboard are sent to <code>{device.id}</code>. Press Esc to release.
       </p>
+
+      <div
+        data-testid="combo-bar"
+        style={{ display: connected ? "flex" : "none", flexWrap: "wrap", gap: 6, margin: "8px 0" }}
+      >
+        {COMBOS.map((c) => (
+          <button
+            key={c.label}
+            data-testid={`combo-${c.label}`}
+            disabled={!connected}
+            onClick={() => sendCombo(c.codes)}
+            style={{ fontSize: 12 }}
+          >
+            {c.label}
+          </button>
+        ))}
+      </div>
 
       {error && <p style={{ color: "crimson" }} role="alert">{error}</p>}
 
