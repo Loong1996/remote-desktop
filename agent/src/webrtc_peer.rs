@@ -1,9 +1,12 @@
+use crate::clipboard;
+use crate::control::{ClipMode, ControlMessage};
 use crate::input::{InputEvent, InputInjector};
 use crate::protocol::IceServer;
 use crate::video::openh264_encoder::Openh264Encoder;
 use crate::video::pipeline::VideoPipeline;
 use crate::video::{make_source, EncodedSample, SampleSink};
 use anyhow::Result;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -186,6 +189,116 @@ fn wire_input(dc: Arc<RTCDataChannel>, input_tx: Sender<InputEvent>) {
     }));
 }
 
+/// Wire the bidirectional "control" data channel: clipboard sync + live quality.
+/// `bitrate_tx` forwards quality requests to the video pipeline; `last_clipboard`
+/// is the shared echo-suppression state. The agent only reads+broadcasts its own
+/// clipboard while a `both` subscription is active (privacy: no unsolicited reads).
+fn wire_control(dc: Arc<RTCDataChannel>, bitrate_tx: Sender<u32>, last_clipboard: Arc<Mutex<String>>) {
+    // Poller lifecycle: `poller_on` is flipped false to stop the current poller.
+    let poller_on = Arc::new(AtomicBool::new(false));
+    let dc_for_msg = dc.clone();
+    dc.on_message(Box::new(move |msg: DataChannelMessage| {
+        let bitrate_tx = bitrate_tx.clone();
+        let last_clipboard = last_clipboard.clone();
+        let poller_on = poller_on.clone();
+        let dc = dc_for_msg.clone();
+        Box::pin(async move {
+            let text = match String::from_utf8(msg.data.to_vec()) {
+                Ok(t) => t,
+                Err(_) => {
+                    tracing::warn!("dropping non-utf8 control frame");
+                    return;
+                }
+            };
+            let ctl: ControlMessage = match serde_json::from_str(&text) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!("dropping malformed control message: {e}");
+                    return;
+                }
+            };
+            match ctl {
+                ControlMessage::Quality { bitrate_bps } => {
+                    let clamped = bitrate_bps.clamp(250_000, 20_000_000);
+                    let _ = bitrate_tx.send(clamped);
+                }
+                ControlMessage::ClipSet { text } => {
+                    if text.len() <= clipboard::CLIP_MAX_BYTES {
+                        if let Err(e) = clipboard::write_clipboard(&text) {
+                            tracing::warn!("write_clipboard failed: {e}");
+                        } else {
+                            *last_clipboard.lock().unwrap() = text;
+                        }
+                    }
+                }
+                ControlMessage::ClipRequest => match clipboard::read_clipboard() {
+                    Ok(current) => {
+                        *last_clipboard.lock().unwrap() = current.clone();
+                        send_clip_set(&dc, current);
+                    }
+                    Err(e) => tracing::warn!("read_clipboard failed: {e}"),
+                },
+                ControlMessage::ClipMode { mode } => {
+                    if mode == ClipMode::Both {
+                        start_clipboard_poller(dc.clone(), last_clipboard.clone(), poller_on.clone());
+                    } else {
+                        poller_on.store(false, Ordering::SeqCst);
+                    }
+                }
+            }
+        })
+    }));
+}
+
+/// Serialize + send a clip-set on the control channel (fire-and-forget).
+fn send_clip_set(dc: &Arc<RTCDataChannel>, text: String) {
+    let msg = ControlMessage::ClipSet { text };
+    let json = match serde_json::to_string(&msg) {
+        Ok(j) => j,
+        Err(e) => {
+            tracing::warn!("failed to serialize clip-set: {e}");
+            return;
+        }
+    };
+    let dc = dc.clone();
+    tokio::spawn(async move {
+        if let Err(e) = dc.send_text(json).await {
+            tracing::warn!("failed to send clip-set: {e}");
+        }
+    });
+}
+
+/// Start (or restart) the agent-side clipboard poller for `both` mode. Reads the
+/// clipboard ~every 800ms; on a change vs the shared last-known value, pushes a
+/// clip-set to the web端. Stops when `poller_on` is set false (mode left `both`)
+/// or the channel closes.
+fn start_clipboard_poller(dc: Arc<RTCDataChannel>, last_clipboard: Arc<Mutex<String>>, poller_on: Arc<AtomicBool>) {
+    // Idempotent: if already running, leave it.
+    if poller_on.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    tokio::spawn(async move {
+        while poller_on.load(Ordering::SeqCst) {
+            tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+            if !poller_on.load(Ordering::SeqCst) {
+                break;
+            }
+            let current = match clipboard::read_clipboard() {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            let to_send = {
+                let last = last_clipboard.lock().unwrap();
+                clipboard::clipboard_to_send(&current, &last, clipboard::CLIP_MAX_BYTES)
+            };
+            if let Some(text) = to_send {
+                *last_clipboard.lock().unwrap() = text.clone();
+                send_clip_set(&dc, text);
+            }
+        }
+    });
+}
+
 impl PeerSession {
     /// Production constructor: owns a real enigo-backed injector.
     ///
@@ -268,12 +381,23 @@ impl PeerSession {
             })
         }));
 
-        // agent is the answerer: the remote side creates the data channel;
-        // we pick it up here in on_data_channel and wire input forwarding.
+        // agent is the answerer: the remote side creates the data channels;
+        // we pick them up here in on_data_channel and dispatch by label.
+        let (bitrate_tx, bitrate_rx) = std::sync::mpsc::channel::<u32>();
+
+        // Shared "last clipboard value we set or saw", so the agent's poller does
+        // not echo back a value the web端 just pushed (and vice-versa).
+        let last_clipboard: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+
         let dc_input_tx = input_tx.clone();
+        let ctl_bitrate_tx = bitrate_tx.clone();
+        let ctl_last_clip = last_clipboard.clone();
         pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
-            let input_tx = dc_input_tx.clone();
-            wire_input(dc, input_tx);
+            match dc.label() {
+                "input" => wire_input(dc, dc_input_tx.clone()),
+                "control" => wire_control(dc, ctl_bitrate_tx.clone(), ctl_last_clip.clone()),
+                other => tracing::warn!("ignoring unknown data channel: {other}"),
+            }
             Box::pin(async {})
         }));
 
@@ -306,8 +430,6 @@ impl PeerSession {
             handle: tokio::runtime::Handle::current(),
         });
         let capturer = make_source(dst_w, dst_h, fps);
-        let (bitrate_tx, bitrate_rx) = std::sync::mpsc::channel::<u32>();
-        let _ = &bitrate_tx; // wired to the control channel in Task 8
         let video =
             VideoPipeline::start(capturer, encoder, sink, dst_w as usize, dst_h as usize, 60, bitrate_rx);
         Self::finish(pc, input_tx, Some(video), keep_awake)
