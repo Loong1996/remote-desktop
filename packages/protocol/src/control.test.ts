@@ -18,4 +18,12 @@ describe("parseControlMessage", () => {
     expect(() => parseControlMessage({ t: "quality", bitrateBps: 10 })).toThrow();
     expect(() => parseControlMessage({ t: "quality", bitrateBps: 99_000_000 })).toThrow();
   });
+
+  it("caps clip-set by UTF-8 byte length, not UTF-16 units", () => {
+    // "€" is 3 UTF-8 bytes; 90000 chars = 270000 bytes > CLIP_MAX_BYTES,
+    // yet .length (90000) is far below the cap — must still be rejected.
+    const euros = "€".repeat(90000);
+    expect(euros.length).toBeLessThan(262144); // discriminates byte-based from length-based
+    expect(() => parseControlMessage({ t: "clip-set", text: euros })).toThrow();
+  });
 });

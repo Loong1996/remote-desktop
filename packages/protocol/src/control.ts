@@ -7,9 +7,8 @@ export interface Quality { t: "quality"; bitrateBps: number; }
 
 export type ControlMessage = ClipSet | ClipRequest | ClipModeMsg | Quality;
 
-// Approximate 256 KB cap on clip-set text (measured in UTF-16 code units on
-// the web side; the agent applies the same numeric cap in bytes — both are
-// guards against pathological payloads, not exact-byte contracts).
+// 256 KB cap on clip-set text, measured in UTF-8 bytes on BOTH sides (web via
+// TextEncoder, agent via String::len) so the two ends accept/reject identically.
 export const CLIP_MAX_BYTES = 262144;
 export const QUALITY_MIN_BPS = 250_000;
 export const QUALITY_MAX_BPS = 20_000_000;
@@ -25,7 +24,7 @@ export function parseControlMessage(raw: unknown): ControlMessage {
   switch (raw.t) {
     case "clip-set": {
       if (typeof raw.text !== "string") throw new Error("clip-set.text must be a string");
-      if (raw.text.length > CLIP_MAX_BYTES) throw new Error("clip-set.text too large");
+      if (new TextEncoder().encode(raw.text).length > CLIP_MAX_BYTES) throw new Error("clip-set.text too large");
       return { t: "clip-set", text: raw.text };
     }
     case "clip-request":
