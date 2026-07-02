@@ -264,7 +264,11 @@ fn wire_control(dc: Arc<RTCDataChannel>, cmd_tx: Sender<PipelineCmd>, last_clipb
                         poller_on.store(false, Ordering::SeqCst);
                     }
                 }
-                ControlMessage::Resolution { .. } => { /* wired in a later task */ }
+                ControlMessage::Resolution { preset } => {
+                    let (w, h) = crate::video::preset_capture_size(preset);
+                    tracing::info!("resolution preset {preset:?} -> {w}x{h}");
+                    let _ = cmd_tx.send(PipelineCmd::Resolution(w, h));
+                }
             }
         })
     }));
@@ -422,11 +426,11 @@ impl PeerSession {
         }));
 
         // Video: start the capture→encode pipeline and add a sendonly H264 track.
-        // Capture at the display's aspect ratio (fit within 1280x720) so the
-        // frame has no in-frame letterbox — otherwise remote cursor coordinates
-        // drift horizontally (see video::target_capture_size).
+        // Capture at the display's aspect ratio. Default preset is hd (the
+        // display's logical size) — the web's resolution dropdown matches.
         let fps = 30u32;
-        let (dst_w, dst_h) = crate::video::target_capture_size(1280, 720);
+        let (dst_w, dst_h) =
+            crate::video::preset_capture_size(crate::control::ResolutionPreset::Hd);
         // Build the encoder BEFORE adding the track. If init fails we add NO
         // video track, so the remote negotiates input-only rather than a
         // sendonly video m-line that is never fed (black screen).

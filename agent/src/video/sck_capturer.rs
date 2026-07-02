@@ -26,7 +26,7 @@ pub struct SckCapturer {
 impl SckCapturer {
     /// Capture the main display scaled to `width`×`height`. Callers should pass
     /// a size matching the display's aspect ratio (see
-    /// [`crate::video::target_capture_size`]) so ScreenCaptureKit does not
+    /// [`crate::video::preset_capture_size`]) so ScreenCaptureKit does not
     /// letterbox the content inside the frame.
     pub fn new(width: u32, height: u32, fps: u32) -> Self {
         Self { width, height, fps, stop: None }

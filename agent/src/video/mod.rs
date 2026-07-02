@@ -49,7 +49,7 @@ pub fn preset_size(preset: ResolutionPreset, dw: u32, dh: u32) -> (u32, u32) {
 }
 
 /// Capture size for `preset` on the main display. Falls back to 1280×720 when
-/// the display query fails (same fallback as target_capture_size).
+/// the display query fails.
 pub fn preset_capture_size(preset: ResolutionPreset) -> (u32, u32) {
     #[cfg(target_os = "macos")]
     {
@@ -64,22 +64,6 @@ pub fn preset_capture_size(preset: ResolutionPreset) -> (u32, u32) {
     // the fallback is a fixed 1280x720 regardless of preset.
     let _ = preset;
     (1280, 720)
-}
-
-/// The capture size to use for the main display: its aspect ratio fit within
-/// `max_w`×`max_h`. On macOS this queries the real display; elsewhere (no query
-/// wired up) it falls back to the bounding box.
-pub fn target_capture_size(max_w: u32, max_h: u32) -> (u32, u32) {
-    #[cfg(target_os = "macos")]
-    {
-        match sck_capturer::main_display_size() {
-            Ok((dw, dh)) => return fit_aspect(dw, dh, max_w, max_h),
-            Err(e) => {
-                tracing::warn!("main display size query failed ({e}); using {max_w}x{max_h}");
-            }
-        }
-    }
-    (even(max_w).max(2), even(max_h).max(2))
 }
 
 /// Select the capture source by `RD_VIDEO_SOURCE`: `testpattern` → synthetic,
