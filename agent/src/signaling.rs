@@ -118,11 +118,11 @@ async fn run_session(config: &AgentConfig) -> SessionOutcome {
                     Err(e) => { tracing::warn!("bad signaling msg: {e}"); continue; }
                 };
                 match parsed {
-                    SignalingMessage::Incoming { session_id, ice_servers, .. } => {
+                    SignalingMessage::Incoming { session_id, relay_policy, ice_servers } => {
                         if current.is_some() {
                             tracing::info!("incoming session {session_id} supersedes existing current session");
                         }
-                        let peer = match PeerSession::new(ice_servers, ice_tx.clone()).await {
+                        let peer = match PeerSession::new(ice_servers, &relay_policy, ice_tx.clone()).await {
                             Ok(p) => p,
                             Err(e) => { tracing::error!("failed to construct peer session for {session_id}: {e}"); continue; }
                         };

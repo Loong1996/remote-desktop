@@ -13,7 +13,7 @@ use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 async fn agent_forwards_parsed_input_events() {
     let (agent_ice_tx, _agent_ice_rx) = mpsc::unbounded_channel::<serde_json::Value>();
     let (input_tx, input_rx) = std::sync::mpsc::channel::<InputEvent>();
-    let agent = PeerSession::new_with_input_sink(vec![], agent_ice_tx, input_tx)
+    let agent = PeerSession::new_with_input_sink(vec![], "relay-fallback", agent_ice_tx, input_tx)
         .await
         .unwrap();
 

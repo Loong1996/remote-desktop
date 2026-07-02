@@ -14,7 +14,7 @@ use webrtc::rtp_transceiver::RTCRtpTransceiverInit;
 #[tokio::test]
 async fn agent_answer_includes_video_when_offer_requests_it() {
     let (agent_ice_tx, _rx) = mpsc::unbounded_channel::<serde_json::Value>();
-    let agent = PeerSession::new(vec![], agent_ice_tx).await.unwrap();
+    let agent = PeerSession::new(vec![], "relay-fallback", agent_ice_tx).await.unwrap();
 
     // web side: a media engine with default codecs (H264 included), offering
     // to RECEIVE video.
