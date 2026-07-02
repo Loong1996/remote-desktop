@@ -26,4 +26,18 @@ describe("parseControlMessage", () => {
     expect(euros.length).toBeLessThan(262144); // discriminates byte-based from length-based
     expect(() => parseControlMessage({ t: "clip-set", text: euros })).toThrow();
   });
+
+  describe("resolution", () => {
+    it("parses each valid preset", () => {
+      for (const preset of ["sd", "hd", "native"] as const) {
+        expect(parseControlMessage({ t: "resolution", preset })).toEqual({ t: "resolution", preset });
+      }
+    });
+
+    it("rejects unknown or missing presets", () => {
+      expect(() => parseControlMessage({ t: "resolution", preset: "8k" })).toThrow(/resolution\.preset/);
+      expect(() => parseControlMessage({ t: "resolution" })).toThrow(/resolution\.preset/);
+      expect(() => parseControlMessage({ t: "resolution", preset: 2 })).toThrow(/resolution\.preset/);
+    });
+  });
 });
