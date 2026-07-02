@@ -162,4 +162,31 @@ describe("SessionView fullscreen", () => {
     fireEvent.change(sel, { target: { value: "native" } });
     expect(h.session.sendControl).toHaveBeenCalledWith({ t: "resolution", preset: "native" });
   });
+
+  it("slider sends a debounced quality message and flips the preset to 自定义", () => {
+    vi.useFakeTimers();
+    try {
+      render(<SessionView token="t" device={device} onExit={() => {}} />);
+      act(() => h.opts!.onState("connected"));
+      const slider = screen.getByTestId("bitrate-slider") as HTMLInputElement;
+      fireEvent.change(slider, { target: { value: "4750000" } });
+      // debounced: nothing sent yet
+      expect(h.session.sendControl).not.toHaveBeenCalledWith(
+        expect.objectContaining({ t: "quality" }),
+      );
+      act(() => vi.advanceTimersByTime(250));
+      expect(h.session.sendControl).toHaveBeenCalledWith({ t: "quality", bitrateBps: 4750000 });
+      const quality = screen.getByTestId("quality-select") as HTMLSelectElement;
+      expect(quality.value).toBe("custom");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("choosing a preset moves the slider to the preset bitrate", () => {
+    render(<SessionView token="t" device={device} onExit={() => {}} />);
+    act(() => h.opts!.onState("connected"));
+    fireEvent.change(screen.getByTestId("quality-select"), { target: { value: "6000000" } });
+    expect((screen.getByTestId("bitrate-slider") as HTMLInputElement).value).toBe("6000000");
+  });
 });

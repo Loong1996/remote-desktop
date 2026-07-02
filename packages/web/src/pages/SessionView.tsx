@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Device, InputEvent, ResolutionPreset } from "@rd/protocol";
+import { QUALITY_MAX_BPS, QUALITY_MIN_BPS } from "@rd/protocol";
 import { API_BASE } from "../api.js";
 import { clipboardToSend, type ClipMode } from "../clipboard.js";
 import { COMBOS, comboEvents } from "../combos.js";
@@ -102,6 +103,7 @@ export function SessionView({ token, device, onExit }: SessionViewProps) {
   // surface loses focus (nothing should stick down remotely).
   const pressedKeys = useRef<Set<string>>(new Set());
   const pressedButtons = useRef<Set<number>>(new Set());
+  const sliderTimer = useRef<number | null>(null);
 
   useEffect(() => {
     setState("connecting");
@@ -149,6 +151,23 @@ export function SessionView({ token, device, onExit }: SessionViewProps) {
     setBitrate(bps);
     sessionRef.current?.sendControl({ t: "quality", bitrateBps: bps });
   }, []);
+
+  const onSlider = useCallback((bps: number) => {
+    setBitrate(bps);
+    if (sliderTimer.current !== null) window.clearTimeout(sliderTimer.current);
+    sliderTimer.current = window.setTimeout(() => {
+      sliderTimer.current = null;
+      sessionRef.current?.sendControl({ t: "quality", bitrateBps: bps });
+    }, 200);
+  }, []);
+
+  // Clear a pending slider send on unmount.
+  useEffect(
+    () => () => {
+      if (sliderTimer.current !== null) window.clearTimeout(sliderTimer.current);
+    },
+    [],
+  );
 
   const onResolution = useCallback((preset: ResolutionPreset) => {
     setResolution(preset);
@@ -348,15 +367,33 @@ export function SessionView({ token, device, onExit }: SessionViewProps) {
           </select>
           <select
             data-testid="quality-select"
-            value={bitrate}
+            value={QUALITY_PRESETS.some((q) => q.bps === bitrate) ? bitrate : "custom"}
             disabled={!connected}
-            onChange={(e) => onQuality(Number(e.target.value))}
+            onChange={(e) => {
+              if (e.target.value !== "custom") onQuality(Number(e.target.value));
+            }}
             style={{ fontSize: 12 }}
           >
+            {!QUALITY_PRESETS.some((q) => q.bps === bitrate) && (
+              <option value="custom">自定义</option>
+            )}
             {QUALITY_PRESETS.map((q) => (
               <option key={q.bps} value={q.bps}>{q.label}</option>
             ))}
           </select>
+          <input
+            type="range"
+            data-testid="bitrate-slider"
+            min={QUALITY_MIN_BPS}
+            max={QUALITY_MAX_BPS}
+            step={250_000}
+            value={bitrate}
+            disabled={!connected}
+            onChange={(e) => onSlider(Number(e.target.value))}
+            style={{ width: 90 }}
+            title={`${(bitrate / 1_000_000).toFixed(2)} Mbps`}
+          />
+          <span style={{ fontSize: 11, minWidth: 64 }}>{(bitrate / 1_000_000).toFixed(2)} Mbps</span>
           <select
             data-testid="clip-mode"
             value={clipMode}
