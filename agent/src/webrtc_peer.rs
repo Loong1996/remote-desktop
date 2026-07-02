@@ -243,8 +243,16 @@ fn wire_control(dc: Arc<RTCDataChannel>, bitrate_tx: Sender<u32>, last_clipboard
                 }
                 ControlMessage::ClipRequest => match clipboard::read_clipboard() {
                     Ok(current) => {
-                        *last_clipboard.lock().unwrap() = current.clone();
-                        send_clip_set(&dc, current);
+                        if current.len() <= clipboard::CLIP_MAX_BYTES {
+                            *last_clipboard.lock().unwrap() = current.clone();
+                            send_clip_set(&dc, current);
+                        } else {
+                            tracing::warn!(
+                                "clipboard pull skipped: {} bytes exceeds cap {}",
+                                current.len(),
+                                clipboard::CLIP_MAX_BYTES
+                            );
+                        }
                     }
                     Err(e) => tracing::warn!("read_clipboard failed: {e}"),
                 },

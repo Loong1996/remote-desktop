@@ -1,7 +1,6 @@
-import type { ClipMode } from "@rd/protocol";
+import { CLIP_MAX_BYTES, type ClipMode } from "@rd/protocol";
 export type { ClipMode };
-
-export const CLIP_MAX_BYTES = 262144;
+export { CLIP_MAX_BYTES };
 
 /** The text to send given the current clipboard + last-known value, or null to
  *  skip (empty, unchanged, or over the UTF-8 byte cap — never truncate). */
