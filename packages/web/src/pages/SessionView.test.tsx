@@ -123,6 +123,13 @@ describe("SessionView fullscreen", () => {
     expect(h.session.sendControl).toHaveBeenCalledWith({ t: "quality", bitrateBps: 6000000 });
   });
 
+  it("offers 原画 at the 20 Mbps clamp ceiling", () => {
+    render(<SessionView token="t" device={device} onExit={() => {}} />);
+    act(() => h.opts!.onState("connected"));
+    fireEvent.change(screen.getByTestId("quality-select"), { target: { value: "20000000" } });
+    expect(h.session.sendControl).toHaveBeenCalledWith({ t: "quality", bitrateBps: 20000000 });
+  });
+
   it("sends clip-mode when the mode selector changes", () => {
     render(<SessionView token="t" device={device} onExit={() => {}} />);
     act(() => h.opts!.onState("connected"));

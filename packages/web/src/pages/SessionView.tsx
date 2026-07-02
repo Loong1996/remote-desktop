@@ -20,10 +20,15 @@ export interface SessionViewProps {
   onExit: () => void;
 }
 
+// Bitrate presets. Capture stays at ~720p (see agent target_capture_size), so
+// beyond ~10 Mbps the gain is marginal; 原画 is the agent's clamp ceiling
+// (QUALITY_MAX_BPS = 20 Mbps) — visually artifact-free 720p, not native-res.
 const QUALITY_PRESETS = [
   { label: "流畅", bps: 1_500_000 },
   { label: "均衡", bps: 3_000_000 },
   { label: "高清", bps: 6_000_000 },
+  { label: "超清", bps: 10_000_000 },
+  { label: "原画", bps: 20_000_000 },
 ];
 
 const STATE_LABEL: Record<ConnectionState, string> = {
