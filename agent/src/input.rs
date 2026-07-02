@@ -140,6 +140,85 @@ pub fn code_to_key(code: &str) -> Option<Key> {
     }
 }
 
+/// Map a `KeyboardEvent.code` (a physical key position) to a macOS virtual
+/// keycode (`kVK_ANSI_*` / `kVK_*` from Carbon HIToolbox `Events.h`).
+///
+/// This is the macOS injection path: `code` is layout-independent and
+/// position-based — exactly what a macOS virtual keycode is — so we map straight
+/// to the keycode and post it with `enigo.raw()`. That deliberately bypasses
+/// enigo's `Key::Unicode` path, whose char→keycode reverse lookup
+/// (`UCKeyTranslate`) fails with `OSStatus -25340` in a headless/background
+/// process context, breaking every letter/digit/symbol key. Modifiers still
+/// compose correctly: `raw()` maintains the CGEvent flag state by keycode, so a
+/// held Shift keycode uppercases a following letter keycode.
+#[cfg(target_os = "macos")]
+pub fn code_to_macos_keycode(code: &str) -> Option<u16> {
+    let kc: u16 = match code {
+        // ANSI letters
+        "KeyA" => 0x00, "KeyB" => 0x0B, "KeyC" => 0x08, "KeyD" => 0x02,
+        "KeyE" => 0x0E, "KeyF" => 0x03, "KeyG" => 0x05, "KeyH" => 0x04,
+        "KeyI" => 0x22, "KeyJ" => 0x26, "KeyK" => 0x28, "KeyL" => 0x25,
+        "KeyM" => 0x2E, "KeyN" => 0x2D, "KeyO" => 0x1F, "KeyP" => 0x23,
+        "KeyQ" => 0x0C, "KeyR" => 0x0F, "KeyS" => 0x01, "KeyT" => 0x11,
+        "KeyU" => 0x20, "KeyV" => 0x09, "KeyW" => 0x0D, "KeyX" => 0x07,
+        "KeyY" => 0x10, "KeyZ" => 0x06,
+        // Top-row digits
+        "Digit1" => 0x12, "Digit2" => 0x13, "Digit3" => 0x14, "Digit4" => 0x15,
+        "Digit5" => 0x17, "Digit6" => 0x16, "Digit7" => 0x1A, "Digit8" => 0x1C,
+        "Digit9" => 0x19, "Digit0" => 0x1D,
+        // Symbols / punctuation
+        "Minus" => 0x1B, "Equal" => 0x18, "BracketLeft" => 0x21,
+        "BracketRight" => 0x1E, "Backslash" => 0x2A, "Semicolon" => 0x29,
+        "Quote" => 0x27, "Backquote" => 0x32, "Comma" => 0x2B,
+        "Period" => 0x2F, "Slash" => 0x2C,
+        // Editing / whitespace (macOS Delete key = ForwardDelete = 0x75)
+        "Enter" => 0x24, "Tab" => 0x30, "Space" => 0x31, "Backspace" => 0x33,
+        "Escape" => 0x35, "Delete" => 0x75,
+        // Arrows
+        "ArrowLeft" => 0x7B, "ArrowRight" => 0x7C, "ArrowDown" => 0x7D,
+        "ArrowUp" => 0x7E,
+        // Navigation cluster
+        "Home" => 0x73, "End" => 0x77, "PageUp" => 0x74, "PageDown" => 0x79,
+        // Modifiers
+        "ShiftLeft" => 0x38, "ShiftRight" => 0x3C, "ControlLeft" => 0x3B,
+        "ControlRight" => 0x3E, "AltLeft" => 0x3A, "AltRight" => 0x3D,
+        "MetaLeft" => 0x37, "MetaRight" => 0x36, "CapsLock" => 0x39,
+        // Function row
+        "F1" => 0x7A, "F2" => 0x78, "F3" => 0x63, "F4" => 0x76, "F5" => 0x60,
+        "F6" => 0x61, "F7" => 0x62, "F8" => 0x64, "F9" => 0x65, "F10" => 0x6D,
+        "F11" => 0x67, "F12" => 0x6F,
+        // Numpad
+        "Numpad0" => 0x52, "Numpad1" => 0x53, "Numpad2" => 0x54, "Numpad3" => 0x55,
+        "Numpad4" => 0x56, "Numpad5" => 0x57, "Numpad6" => 0x58, "Numpad7" => 0x59,
+        "Numpad8" => 0x5B, "Numpad9" => 0x5C, "NumpadDecimal" => 0x41,
+        "NumpadAdd" => 0x45, "NumpadSubtract" => 0x4E, "NumpadMultiply" => 0x43,
+        "NumpadDivide" => 0x4B, "NumpadEnter" => 0x4C, "NumpadEqual" => 0x51,
+        _ => return None,
+    };
+    Some(kc)
+}
+
+/// Inject a key press/release for a `KeyboardEvent.code`. On macOS this routes
+/// through the physical virtual-keycode table + `enigo.raw()` (bypassing the
+/// broken `Key::Unicode`/UCKeyTranslate lookup), falling back to the layout
+/// `Key` path only for codes the keycode table doesn't cover. On other
+/// platforms it uses the `Key` path, which works there.
+fn inject_key(enigo: &mut Enigo, code: &str, direction: Direction) -> InputResult<()> {
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(kc) = code_to_macos_keycode(code) {
+            return enigo.raw(kc, direction);
+        }
+    }
+    match code_to_key(code) {
+        Some(k) => enigo.key(k, direction),
+        None => {
+            tracing::warn!("unmapped key code: {code}");
+            Ok(())
+        }
+    }
+}
+
 /// Owns an `enigo::Enigo` on a dedicated OS thread and injects `InputEvent`s
 /// serially. The data-channel callback only parses frames and pushes them to
 /// `sender()`; this keeps `Enigo` (which is `!Send`) off the async runtime and
@@ -250,20 +329,8 @@ fn inject(enigo: &mut Enigo, ev: &InputEvent) -> InputResult<()> {
             }
             Ok(())
         }
-        InputEvent::KDown { code } => match code_to_key(code) {
-            Some(k) => enigo.key(k, Direction::Press),
-            None => {
-                tracing::warn!("unmapped key code: {code}");
-                Ok(())
-            }
-        },
-        InputEvent::KUp { code } => match code_to_key(code) {
-            Some(k) => enigo.key(k, Direction::Release),
-            None => {
-                tracing::warn!("unmapped key code: {code}");
-                Ok(())
-            }
-        },
+        InputEvent::KDown { code } => inject_key(enigo, code, Direction::Press),
+        InputEvent::KUp { code } => inject_key(enigo, code, Direction::Release),
     }
 }
 
@@ -361,6 +428,40 @@ mod mapper_tests {
         assert!(code_to_key("MediaPlayPause").is_none());
         assert!(code_to_key("Fn").is_none());
         assert!(code_to_key("").is_none());
+    }
+
+    // On macOS injection goes through physical virtual keycodes (see
+    // `code_to_macos_keycode`), bypassing the broken `Key::Unicode`/UCKeyTranslate
+    // reverse lookup. Spot-check the table against Carbon `kVK_*` constants.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn code_to_macos_keycode_maps_physical_positions() {
+        assert_eq!(code_to_macos_keycode("KeyA"), Some(0x00));
+        assert_eq!(code_to_macos_keycode("KeyH"), Some(0x04));
+        assert_eq!(code_to_macos_keycode("KeyZ"), Some(0x06));
+        assert_eq!(code_to_macos_keycode("Digit0"), Some(0x1D));
+        assert_eq!(code_to_macos_keycode("Digit1"), Some(0x12));
+        assert_eq!(code_to_macos_keycode("Space"), Some(0x31));
+        assert_eq!(code_to_macos_keycode("Enter"), Some(0x24));
+        // Backspace vs Delete is the classic macOS keycode gotcha: Backspace is
+        // kVK_Delete (0x33), the browser's Delete is kVK_ForwardDelete (0x75).
+        assert_eq!(code_to_macos_keycode("Backspace"), Some(0x33));
+        assert_eq!(code_to_macos_keycode("Delete"), Some(0x75));
+        // Digit row is deliberately "out of order" at 5/6 in the hardware map.
+        assert_eq!(code_to_macos_keycode("Digit5"), Some(0x17));
+        assert_eq!(code_to_macos_keycode("Digit6"), Some(0x16));
+        // Left/right modifier codes are numerically "reversed" (L > R here).
+        assert_eq!(code_to_macos_keycode("ShiftLeft"), Some(0x38));
+        assert_eq!(code_to_macos_keycode("MetaLeft"), Some(0x37));
+        assert_eq!(code_to_macos_keycode("MetaRight"), Some(0x36));
+        assert_eq!(code_to_macos_keycode("ArrowUp"), Some(0x7E));
+        // F-keys are not contiguous: F3 and F5 sit far from F1.
+        assert_eq!(code_to_macos_keycode("F1"), Some(0x7A));
+        assert_eq!(code_to_macos_keycode("F3"), Some(0x63));
+        assert_eq!(code_to_macos_keycode("F5"), Some(0x60));
+        assert_eq!(code_to_macos_keycode("Numpad5"), Some(0x57));
+        assert_eq!(code_to_macos_keycode("NumpadEnter"), Some(0x4C));
+        assert_eq!(code_to_macos_keycode("MediaPlayPause"), None);
     }
 }
 
