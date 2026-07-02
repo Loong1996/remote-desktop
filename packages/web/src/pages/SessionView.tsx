@@ -62,6 +62,9 @@ export function SessionView({ token, device, onExit }: SessionViewProps) {
   const [error, setError] = useState<string | null>(null);
   const [log, setLog] = useState<string[]>([]);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  // "Fill window" = maximize inside the browser viewport (CSS overlay), distinct
+  // from OS fullscreen (Fullscreen API). Keeps the browser chrome/tabs visible.
+  const [isMaximized, setIsMaximized] = useState(false);
   const sessionRef = useRef<Session | null>(null);
   const surfaceRef = useRef<HTMLVideoElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -147,6 +150,16 @@ export function SessionView({ token, device, onExit }: SessionViewProps) {
     }
   }, []);
 
+  // Fill the browser viewport (CSS overlay), no Fullscreen API. Focus the
+  // surface on enter so keyboard capture works immediately.
+  const toggleMaximize = useCallback(() => {
+    setIsMaximized((m) => {
+      const next = !m;
+      if (next) queueMicrotask(() => surfaceRef.current?.focus());
+      return next;
+    });
+  }, []);
+
   function onMouseMove(e: React.MouseEvent) {
     if (!connected || !surfaceRef.current) return;
     const el = surfaceRef.current;
@@ -183,6 +196,7 @@ export function SessionView({ token, device, onExit }: SessionViewProps) {
   function onKeyDown(e: React.KeyboardEvent) {
     if (!connected) return;
     if (e.code === "Escape") {
+      if (isMaximized) setIsMaximized(false);
       surfaceRef.current?.blur();
       return;
     }
@@ -203,6 +217,9 @@ export function SessionView({ token, device, onExit }: SessionViewProps) {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <button onClick={onExit}>← Back to devices</button>
         <span style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <button onClick={toggleMaximize} disabled={!connected} data-testid="maximize-btn">
+            {isMaximized ? "Exit fill" : "⤢ Fill window"}
+          </button>
           <button onClick={toggleFullscreen} disabled={!connected} data-testid="fullscreen-btn">
             {isFullscreen ? "Exit fullscreen" : "⛶ Fullscreen"}
           </button>
@@ -252,13 +269,36 @@ export function SessionView({ token, device, onExit }: SessionViewProps) {
                 objectFit: "contain", outline: "none", border: "none",
                 cursor: connected ? "crosshair" : "default",
               }
-            : {
-                width: "100%", height: 360, borderRadius: 8, border: "2px solid #cbd5e1",
-                background: "#0f172a", outline: "none", objectFit: "contain",
-                cursor: connected ? "crosshair" : "default",
-              }
+            : isMaximized
+              ? {
+                  // Fill the browser viewport (fixed overlay), browser chrome
+                  // still visible; aspect-fit with letterbox.
+                  position: "fixed", inset: 0, width: "100vw", height: "100vh",
+                  zIndex: 1000, background: "#000", objectFit: "contain",
+                  outline: "none", border: "none",
+                  cursor: connected ? "crosshair" : "default",
+                }
+              : {
+                  width: "100%", height: 360, borderRadius: 8, border: "2px solid #cbd5e1",
+                  background: "#0f172a", outline: "none", objectFit: "contain",
+                  cursor: connected ? "crosshair" : "default",
+                }
         }
       />
+
+      {isMaximized && (
+        <button
+          onClick={toggleMaximize}
+          data-testid="maximize-exit"
+          style={{
+            position: "fixed", top: 12, right: 12, zIndex: 1001,
+            padding: "6px 10px", borderRadius: 6, border: "none",
+            background: "rgba(0,0,0,0.6)", color: "#fff", cursor: "pointer",
+          }}
+        >
+          Exit fill (Esc)
+        </button>
+      )}
 
       <h3 style={{ marginBottom: 4 }}>Sent events</h3>
       <div
