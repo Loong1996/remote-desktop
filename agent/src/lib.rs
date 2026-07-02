@@ -1,4 +1,5 @@
 pub mod config;
+pub mod control;
 pub mod input;
 pub mod permission;
 pub mod protocol;
