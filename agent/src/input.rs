@@ -443,12 +443,24 @@ mod mapper_tests {
         assert_eq!(code_to_macos_keycode("Digit1"), Some(0x12));
         assert_eq!(code_to_macos_keycode("Space"), Some(0x31));
         assert_eq!(code_to_macos_keycode("Enter"), Some(0x24));
+        // Backspace vs Delete is the classic macOS keycode gotcha: Backspace is
+        // kVK_Delete (0x33), the browser's Delete is kVK_ForwardDelete (0x75).
         assert_eq!(code_to_macos_keycode("Backspace"), Some(0x33));
+        assert_eq!(code_to_macos_keycode("Delete"), Some(0x75));
+        // Digit row is deliberately "out of order" at 5/6 in the hardware map.
+        assert_eq!(code_to_macos_keycode("Digit5"), Some(0x17));
+        assert_eq!(code_to_macos_keycode("Digit6"), Some(0x16));
+        // Left/right modifier codes are numerically "reversed" (L > R here).
         assert_eq!(code_to_macos_keycode("ShiftLeft"), Some(0x38));
         assert_eq!(code_to_macos_keycode("MetaLeft"), Some(0x37));
+        assert_eq!(code_to_macos_keycode("MetaRight"), Some(0x36));
         assert_eq!(code_to_macos_keycode("ArrowUp"), Some(0x7E));
+        // F-keys are not contiguous: F3 and F5 sit far from F1.
         assert_eq!(code_to_macos_keycode("F1"), Some(0x7A));
+        assert_eq!(code_to_macos_keycode("F3"), Some(0x63));
+        assert_eq!(code_to_macos_keycode("F5"), Some(0x60));
         assert_eq!(code_to_macos_keycode("Numpad5"), Some(0x57));
+        assert_eq!(code_to_macos_keycode("NumpadEnter"), Some(0x4C));
         assert_eq!(code_to_macos_keycode("MediaPlayPause"), None);
     }
 }
