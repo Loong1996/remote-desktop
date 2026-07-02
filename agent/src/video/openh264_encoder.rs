@@ -66,6 +66,17 @@ impl VideoEncoder for Openh264Encoder {
             Err(e) => tracing::warn!("set_bitrate rebuild failed, keeping current bitrate: {e}"),
         }
     }
+
+    fn reset(&mut self) {
+        match Self::build_encoder(self.bitrate_bps, self.fps) {
+            Ok(enc) => {
+                self.encoder = enc;
+                // A fresh encoder must open with a keyframe so the decoder re-syncs.
+                self.force_idr_next = true;
+            }
+            Err(e) => tracing::warn!("encoder reset failed, keeping current encoder: {e}"),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -111,6 +122,17 @@ mod tests {
         let _ = enc.encode(&gray_i420(64, 64), true).unwrap();
         enc.set_bitrate(4_000_000);
         // force_idr=false, but the rebuilt encoder must still emit SPS+PPS+IDR.
+        let s = enc.encode(&gray_i420(64, 64), false).unwrap();
+        assert!(s.keyframe);
+        let types = nal_types(&s.data);
+        assert!(types.contains(&7) && types.contains(&8) && types.contains(&5), "got {types:?}");
+    }
+
+    #[test]
+    fn reset_then_encode_emits_keyframe_with_parameter_sets() {
+        let mut enc = Openh264Encoder::new(64, 64, 1_000_000, 30.0).unwrap();
+        let _ = enc.encode(&gray_i420(64, 64), true).unwrap();
+        enc.reset();
         let s = enc.encode(&gray_i420(64, 64), false).unwrap();
         assert!(s.keyframe);
         let types = nal_types(&s.data);

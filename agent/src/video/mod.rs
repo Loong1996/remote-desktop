@@ -144,6 +144,10 @@ pub trait VideoEncoder: Send {
     fn encode(&mut self, frame: &I420, force_idr: bool) -> anyhow::Result<EncodedSample>;
     /// Change the target bitrate for subsequent frames. Default: no-op.
     fn set_bitrate(&mut self, _bitrate_bps: u32) {}
+    /// Drop internal codec state so the next frame re-initializes at the
+    /// incoming frame's dimensions and emits fresh SPS/PPS + IDR (used when the
+    /// capture resolution changes). Default: no-op.
+    fn reset(&mut self) {}
 }
 
 /// Where the pipeline delivers encoded samples (a WebRTC track in production,

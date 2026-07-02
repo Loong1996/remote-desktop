@@ -3,7 +3,7 @@ use crate::control::{ClipMode, ControlMessage};
 use crate::input::{InputEvent, InputInjector};
 use crate::protocol::IceServer;
 use crate::video::openh264_encoder::Openh264Encoder;
-use crate::video::pipeline::VideoPipeline;
+use crate::video::pipeline::{PipelineCmd, VideoPipeline};
 use crate::video::{make_source, EncodedSample, SampleSink};
 use anyhow::Result;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -190,10 +190,11 @@ fn wire_input(dc: Arc<RTCDataChannel>, input_tx: Sender<InputEvent>) {
 }
 
 /// Wire the bidirectional "control" data channel: clipboard sync + live quality.
-/// `bitrate_tx` forwards quality requests to the video pipeline; `last_clipboard`
-/// is the shared echo-suppression state. The agent only reads+broadcasts its own
-/// clipboard while a `both` subscription is active (privacy: no unsolicited reads).
-fn wire_control(dc: Arc<RTCDataChannel>, bitrate_tx: Sender<u32>, last_clipboard: Arc<Mutex<String>>) {
+/// `cmd_tx` forwards quality/resolution requests to the video pipeline;
+/// `last_clipboard` is the shared echo-suppression state. The agent only
+/// reads+broadcasts its own clipboard while a `both` subscription is active
+/// (privacy: no unsolicited reads).
+fn wire_control(dc: Arc<RTCDataChannel>, cmd_tx: Sender<PipelineCmd>, last_clipboard: Arc<Mutex<String>>) {
     // Poller lifecycle: `poller_on` is flipped false to stop the current poller.
     let poller_on = Arc::new(AtomicBool::new(false));
 
@@ -208,7 +209,7 @@ fn wire_control(dc: Arc<RTCDataChannel>, bitrate_tx: Sender<u32>, last_clipboard
 
     let dc_for_msg = dc.clone();
     dc.on_message(Box::new(move |msg: DataChannelMessage| {
-        let bitrate_tx = bitrate_tx.clone();
+        let cmd_tx = cmd_tx.clone();
         let last_clipboard = last_clipboard.clone();
         let poller_on = poller_on.clone();
         let dc = dc_for_msg.clone();
@@ -230,7 +231,7 @@ fn wire_control(dc: Arc<RTCDataChannel>, bitrate_tx: Sender<u32>, last_clipboard
             match ctl {
                 ControlMessage::Quality { bitrate_bps } => {
                     let clamped = bitrate_bps.clamp(250_000, 20_000_000);
-                    let _ = bitrate_tx.send(clamped);
+                    let _ = cmd_tx.send(PipelineCmd::Bitrate(clamped));
                 }
                 ControlMessage::ClipSet { text } => {
                     if text.len() <= clipboard::CLIP_MAX_BYTES {
@@ -402,19 +403,19 @@ impl PeerSession {
 
         // agent is the answerer: the remote side creates the data channels;
         // we pick them up here in on_data_channel and dispatch by label.
-        let (bitrate_tx, bitrate_rx) = std::sync::mpsc::channel::<u32>();
+        let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<PipelineCmd>();
 
         // Shared "last clipboard value we set or saw", so the agent's poller does
         // not echo back a value the web端 just pushed (and vice-versa).
         let last_clipboard: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
 
         let dc_input_tx = input_tx.clone();
-        let ctl_bitrate_tx = bitrate_tx.clone();
+        let ctl_cmd_tx = cmd_tx.clone();
         let ctl_last_clip = last_clipboard.clone();
         pc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
             match dc.label() {
                 "input" => wire_input(dc, dc_input_tx.clone()),
-                "control" => wire_control(dc, ctl_bitrate_tx.clone(), ctl_last_clip.clone()),
+                "control" => wire_control(dc, ctl_cmd_tx.clone(), ctl_last_clip.clone()),
                 other => tracing::warn!("ignoring unknown data channel: {other}"),
             }
             Box::pin(async {})
@@ -449,8 +450,11 @@ impl PeerSession {
             handle: tokio::runtime::Handle::current(),
         });
         let capturer = make_source(dst_w, dst_h, fps);
-        let video =
-            VideoPipeline::start(capturer, encoder, sink, dst_w as usize, dst_h as usize, 60, bitrate_rx);
+        let factory: crate::video::pipeline::SourceFactory =
+            Box::new(move |w, h| make_source(w, h, fps));
+        let video = VideoPipeline::start(
+            capturer, encoder, sink, dst_w as usize, dst_h as usize, 60, cmd_rx, factory,
+        );
         Self::finish(pc, input_tx, Some(video), keep_awake)
     }
 
