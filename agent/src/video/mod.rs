@@ -10,6 +10,46 @@ pub mod testpattern;
 #[cfg(target_os = "macos")]
 pub mod sck_capturer;
 
+/// Round down to an even number (H.264 needs even width/height).
+fn even(n: u32) -> u32 {
+    n & !1
+}
+
+/// Pick a capture size that preserves the display's aspect ratio, scaled to fit
+/// within `max_w`×`max_h`, with even dimensions.
+///
+/// Capturing at the display's own aspect ratio is what keeps the remote cursor
+/// aligned: if we captured at a fixed 16:9 while the display is 16:10,
+/// ScreenCaptureKit letterboxes the content inside the frame, but the browser
+/// maps the pointer against the *whole* frame — so the injected position drifts
+/// horizontally (correct at center, worse toward the edges). Matching the aspect
+/// removes the in-frame letterbox entirely.
+pub fn fit_aspect(disp_w: u32, disp_h: u32, max_w: u32, max_h: u32) -> (u32, u32) {
+    if disp_w == 0 || disp_h == 0 {
+        return (even(max_w).max(2), even(max_h).max(2));
+    }
+    let scale = f64::min(max_w as f64 / disp_w as f64, max_h as f64 / disp_h as f64);
+    let w = (disp_w as f64 * scale).round() as u32;
+    let h = (disp_h as f64 * scale).round() as u32;
+    (even(w).max(2), even(h).max(2))
+}
+
+/// The capture size to use for the main display: its aspect ratio fit within
+/// `max_w`×`max_h`. On macOS this queries the real display; elsewhere (no query
+/// wired up) it falls back to the bounding box.
+pub fn target_capture_size(max_w: u32, max_h: u32) -> (u32, u32) {
+    #[cfg(target_os = "macos")]
+    {
+        match sck_capturer::main_display_size() {
+            Ok((dw, dh)) => return fit_aspect(dw, dh, max_w, max_h),
+            Err(e) => {
+                tracing::warn!("main display size query failed ({e}); using {max_w}x{max_h}");
+            }
+        }
+    }
+    (even(max_w).max(2), even(max_h).max(2))
+}
+
 /// Select the capture source by `RD_VIDEO_SOURCE`: `testpattern` → synthetic,
 /// anything else (default `screen`) → real capture where available.
 pub fn make_source(w: u32, h: u32, fps: u32) -> Box<dyn ScreenCapturer> {
@@ -19,7 +59,7 @@ pub fn make_source(w: u32, h: u32, fps: u32) -> Box<dyn ScreenCapturer> {
     }
     #[cfg(target_os = "macos")]
     {
-        Box::new(sck_capturer::SckCapturer::new(fps))
+        Box::new(sck_capturer::SckCapturer::new(w, h, fps))
     }
     #[cfg(target_os = "windows")]
     {
@@ -76,6 +116,45 @@ pub trait VideoEncoder: Send {
 /// a recorder in tests).
 pub trait SampleSink: Send + Sync {
     fn write(&self, sample: EncodedSample);
+}
+
+#[cfg(test)]
+mod fit_aspect_tests {
+    use super::fit_aspect;
+
+    #[test]
+    fn preserves_16_10_display_within_720p_box() {
+        // 16:10 display (e.g. 2560x1664) → no 16:9 letterbox; height-limited.
+        let (w, h) = fit_aspect(2560, 1664, 1280, 720);
+        assert_eq!(h, 720);
+        assert_eq!(w, 1108); // 720 * 2560/1664 = 1107.7 → round 1108, even
+        assert!(w % 2 == 0 && h % 2 == 0);
+    }
+
+    #[test]
+    fn exact_16_9_display_fills_the_box() {
+        assert_eq!(fit_aspect(1920, 1080, 1280, 720), (1280, 720));
+    }
+
+    #[test]
+    fn taller_display_is_width_limited() {
+        // A 16:10 portrait-ish case fits by width.
+        let (w, h) = fit_aspect(1000, 2000, 1280, 720);
+        assert_eq!(w, 360); // 720/2 aspect: 720*1000/2000=360
+        assert_eq!(h, 720);
+    }
+
+    #[test]
+    fn zero_display_falls_back_to_box() {
+        assert_eq!(fit_aspect(0, 0, 1280, 720), (1280, 720));
+    }
+
+    #[test]
+    fn dimensions_are_always_even() {
+        let (w, h) = fit_aspect(1471, 957, 1280, 720); // odd inputs
+        assert_eq!(w % 2, 0);
+        assert_eq!(h % 2, 0);
+    }
 }
 
 #[cfg(test)]
