@@ -3,28 +3,44 @@ use openh264::encoder::{BitRate, Encoder, EncoderConfig, FrameRate};
 use openh264::formats::YUVSlices;
 use std::time::Duration;
 
-/// Software H.264 encoder (openh264). Owns the encoder and the per-frame duration.
+/// Software H.264 encoder (openh264). Owns the encoder, per-frame duration, and
+/// the parameters needed to rebuild the encoder when the bitrate changes.
 pub struct Openh264Encoder {
     encoder: Encoder,
     frame_dur: Duration,
+    fps: f32,
+    bitrate_bps: u32,
+    force_idr_next: bool,
 }
 
 impl Openh264Encoder {
     pub fn new(width: u32, height: u32, bitrate_bps: u32, fps: f32) -> anyhow::Result<Self> {
         let _ = (width, height); // resolution is taken from the YUVSource at encode time
+        let encoder = Self::build_encoder(bitrate_bps, fps)?;
+        Ok(Self {
+            encoder,
+            frame_dur: Duration::from_secs_f32(1.0 / fps),
+            fps,
+            bitrate_bps,
+            force_idr_next: false,
+        })
+    }
+
+    fn build_encoder(bitrate_bps: u32, fps: f32) -> anyhow::Result<Encoder> {
         let config = EncoderConfig::new()
             .bitrate(BitRate::from_bps(bitrate_bps))
             .max_frame_rate(FrameRate::from_hz(fps));
-        let encoder = Encoder::with_api_config(openh264::OpenH264API::from_source(), config)?;
-        Ok(Self { encoder, frame_dur: Duration::from_secs_f32(1.0 / fps) })
+        Ok(Encoder::with_api_config(openh264::OpenH264API::from_source(), config)?)
     }
 }
 
 impl VideoEncoder for Openh264Encoder {
     fn encode(&mut self, frame: &I420, force_idr: bool) -> anyhow::Result<EncodedSample> {
-        if force_idr {
+        let idr = force_idr || self.force_idr_next;
+        if idr {
             self.encoder.force_intra_frame();
         }
+        self.force_idr_next = false;
         let yuv = YUVSlices::new(
             (&frame.y, &frame.u, &frame.v),
             (frame.width, frame.height),
@@ -33,7 +49,22 @@ impl VideoEncoder for Openh264Encoder {
         let bitstream = self.encoder.encode(&yuv)?;
         let data = bitstream.to_vec();
         // openh264 emits SPS+PPS with each IDR; treat a forced-IDR frame as keyframe.
-        Ok(EncodedSample { data, duration: self.frame_dur, keyframe: force_idr })
+        Ok(EncodedSample { data, duration: self.frame_dur, keyframe: idr })
+    }
+
+    fn set_bitrate(&mut self, bitrate_bps: u32) {
+        if bitrate_bps == self.bitrate_bps {
+            return;
+        }
+        match Self::build_encoder(bitrate_bps, self.fps) {
+            Ok(enc) => {
+                self.encoder = enc;
+                self.bitrate_bps = bitrate_bps;
+                // A fresh encoder must open with a keyframe so the decoder re-syncs.
+                self.force_idr_next = true;
+            }
+            Err(e) => tracing::warn!("set_bitrate rebuild failed, keeping current bitrate: {e}"),
+        }
     }
 }
 
@@ -72,6 +103,18 @@ mod tests {
         let _ = enc.encode(&gray_i420(64, 64), true).unwrap();
         let s = enc.encode(&gray_i420(64, 64), false).unwrap();
         assert!(!s.data.is_empty());
+    }
+
+    #[test]
+    fn set_bitrate_rebuild_still_emits_keyframe() {
+        let mut enc = Openh264Encoder::new(64, 64, 1_000_000, 30.0).unwrap();
+        let _ = enc.encode(&gray_i420(64, 64), true).unwrap();
+        enc.set_bitrate(4_000_000);
+        // force_idr=false, but the rebuilt encoder must still emit SPS+PPS+IDR.
+        let s = enc.encode(&gray_i420(64, 64), false).unwrap();
+        assert!(s.keyframe);
+        let types = nal_types(&s.data);
+        assert!(types.contains(&7) && types.contains(&8) && types.contains(&5), "got {types:?}");
     }
 
     /// Parse Annex-B NAL unit types (5 low bits of the byte after each start code).

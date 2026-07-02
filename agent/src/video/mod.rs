@@ -110,6 +110,8 @@ pub trait ScreenCapturer: Send {
 /// Encodes I420 frames to H.264 Annex-B. `force_idr` requests a keyframe.
 pub trait VideoEncoder: Send {
     fn encode(&mut self, frame: &I420, force_idr: bool) -> anyhow::Result<EncodedSample>;
+    /// Change the target bitrate for subsequent frames. Default: no-op.
+    fn set_bitrate(&mut self, _bitrate_bps: u32) {}
 }
 
 /// Where the pipeline delivers encoded samples (a WebRTC track in production,

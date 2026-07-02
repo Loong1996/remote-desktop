@@ -306,7 +306,10 @@ impl PeerSession {
             handle: tokio::runtime::Handle::current(),
         });
         let capturer = make_source(dst_w, dst_h, fps);
-        let video = VideoPipeline::start(capturer, encoder, sink, dst_w as usize, dst_h as usize, 60);
+        let (bitrate_tx, bitrate_rx) = std::sync::mpsc::channel::<u32>();
+        let _ = &bitrate_tx; // wired to the control channel in Task 8
+        let video =
+            VideoPipeline::start(capturer, encoder, sink, dst_w as usize, dst_h as usize, 60, bitrate_rx);
         Self::finish(pc, input_tx, Some(video), keep_awake)
     }
 
