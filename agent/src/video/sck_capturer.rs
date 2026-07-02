@@ -17,14 +17,32 @@ use screencapturekit::{
 /// thread (SCStream is not `Send`); dropping the capturer signals that thread to
 /// `stop_capture()` and release the stream — no per-session leak.
 pub struct SckCapturer {
+    pub width: u32,
+    pub height: u32,
     pub fps: u32,
     stop: Option<std::sync::mpsc::Sender<()>>,
 }
 
 impl SckCapturer {
-    pub fn new(fps: u32) -> Self {
-        Self { fps, stop: None }
+    /// Capture the main display scaled to `width`×`height`. Callers should pass
+    /// a size matching the display's aspect ratio (see
+    /// [`crate::video::target_capture_size`]) so ScreenCaptureKit does not
+    /// letterbox the content inside the frame.
+    pub fn new(width: u32, height: u32, fps: u32) -> Self {
+        Self { width, height, fps, stop: None }
     }
+}
+
+/// The main display's size (points), for choosing an aspect-matched capture size.
+pub fn main_display_size() -> anyhow::Result<(u32, u32)> {
+    let content =
+        SCShareableContent::get().map_err(|e| anyhow::anyhow!("SCShareableContent: {e:?}"))?;
+    let display = content
+        .displays()
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("no display found"))?;
+    Ok((display.width(), display.height()))
 }
 
 struct FrameHandler {
@@ -57,6 +75,7 @@ impl SCStreamOutputTrait for FrameHandler {
 impl ScreenCapturer for SckCapturer {
     fn start(&mut self, sink: Sender<Frame>) -> anyhow::Result<()> {
         let fps = self.fps;
+        let (cap_w, cap_h) = (self.width.max(2), self.height.max(2));
         let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
         // Report setup success/failure back to start() so permission/stream
         // errors surface synchronously.
@@ -77,8 +96,8 @@ impl ScreenCapturer for SckCapturer {
                     .with_excluding_windows(&[])
                     .build();
                 let config = SCStreamConfiguration::new()
-                    .with_width(1280)
-                    .with_height(720)
+                    .with_width(cap_w)
+                    .with_height(cap_h)
                     .with_fps(fps)
                     .with_pixel_format(PixelFormat::BGRA);
                 let mut stream = SCStream::new(&filter, &config);
@@ -138,7 +157,7 @@ mod tests {
     #[test]
     #[ignore]
     fn captures_a_real_frame() {
-        let mut cap = SckCapturer::new(30);
+        let mut cap = SckCapturer::new(1280, 720, 30);
         let (tx, rx) = std::sync::mpsc::channel();
         cap.start(tx).unwrap();
         let f = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
