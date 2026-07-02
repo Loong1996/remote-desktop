@@ -57,6 +57,56 @@ pub struct PeerSession {
     ice_buffer: Mutex<IceBuffer<RTCIceCandidateInit>>,
     _injector: Option<InputInjector>,
     _video: Option<VideoPipeline>,
+    _keep_awake: KeepDisplayAwake,
+}
+
+/// Keeps the display awake for the session's lifetime. macOS sleeps the display
+/// on a *local* idle timer that remote-injected input does not reset; a slept
+/// display makes ScreenCaptureKit report "no display found" → a black remote
+/// screen. Held via `caffeinate` for the session, dropped (restoring normal
+/// display sleep) when the session ends.
+struct KeepDisplayAwake {
+    #[cfg(target_os = "macos")]
+    child: Option<std::process::Child>,
+}
+
+impl KeepDisplayAwake {
+    fn start() -> Self {
+        #[cfg(target_os = "macos")]
+        {
+            // -d: prevent display idle-sleep for the session; -u: declare user
+            // activity so an already-asleep display wakes now. No -t → the -d
+            // assertion is held until we kill the process on drop.
+            let child = match std::process::Command::new("/usr/bin/caffeinate")
+                .args(["-d", "-u"])
+                .spawn()
+            {
+                Ok(child) => Some(child),
+                Err(e) => {
+                    tracing::warn!(
+                        "could not keep the display awake ({e}); the remote screen \
+                         may go black if the被控端 display sleeps"
+                    );
+                    None
+                }
+            };
+            Self { child }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            Self {}
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for KeepDisplayAwake {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
 }
 
 /// SampleSink that forwards encoded H.264 to a WebRTC track. `write_sample` is
@@ -173,6 +223,12 @@ impl PeerSession {
         local_ice_tx: UnboundedSender<serde_json::Value>,
         input_tx: Sender<InputEvent>,
     ) -> Result<PeerSession> {
+        // Wake + hold the display awake first, so it is available before we
+        // query its size and start ScreenCaptureKit (a slept display would make
+        // capture fail with "no display found"). WebRTC setup below gives the
+        // wake a moment to take effect before capture starts.
+        let keep_awake = KeepDisplayAwake::start();
+
         let mut m = MediaEngine::default();
         m.register_default_codecs()?;
         let mut registry = Registry::new();
@@ -236,7 +292,7 @@ impl PeerSession {
                 Err(e) => {
                     tracing::error!("H264 encoder init failed, video disabled: {e}");
                     // still return a session (input-only) — mirror the injector-fail path
-                    return Self::finish(pc, input_tx, None);
+                    return Self::finish(pc, input_tx, None, keep_awake);
                 }
             };
         let video_track = Arc::new(TrackLocalStaticSample::new(
@@ -251,19 +307,21 @@ impl PeerSession {
         });
         let capturer = make_source(dst_w, dst_h, fps);
         let video = VideoPipeline::start(capturer, encoder, sink, dst_w as usize, dst_h as usize, 60);
-        Self::finish(pc, input_tx, Some(video))
+        Self::finish(pc, input_tx, Some(video), keep_awake)
     }
 
     fn finish(
         pc: Arc<RTCPeerConnection>,
         _input_tx: Sender<InputEvent>,
         video: Option<VideoPipeline>,
+        keep_awake: KeepDisplayAwake,
     ) -> Result<PeerSession> {
         Ok(PeerSession {
             pc,
             ice_buffer: Mutex::new(IceBuffer::new()),
             _injector: None,
             _video: video,
+            _keep_awake: keep_awake,
         })
     }
 
