@@ -196,6 +196,16 @@ fn wire_input(dc: Arc<RTCDataChannel>, input_tx: Sender<InputEvent>) {
 fn wire_control(dc: Arc<RTCDataChannel>, bitrate_tx: Sender<u32>, last_clipboard: Arc<Mutex<String>>) {
     // Poller lifecycle: `poller_on` is flipped false to stop the current poller.
     let poller_on = Arc::new(AtomicBool::new(false));
+
+    // Stop the clipboard poller when the control channel closes (session end /
+    // tab close / network drop) — otherwise the spawned task runs forever,
+    // keeps reading the clipboard, and pins the dead channel.
+    let poller_on_close = poller_on.clone();
+    dc.on_close(Box::new(move || {
+        poller_on_close.store(false, Ordering::SeqCst);
+        Box::pin(async {})
+    }));
+
     let dc_for_msg = dc.clone();
     dc.on_message(Box::new(move |msg: DataChannelMessage| {
         let bitrate_tx = bitrate_tx.clone();
