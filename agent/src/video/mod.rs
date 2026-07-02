@@ -60,6 +60,9 @@ pub fn preset_capture_size(preset: ResolutionPreset) -> (u32, u32) {
             }
         }
     }
+    // `preset` is only consulted when the display query succeeds (macOS);
+    // the fallback is a fixed 1280x720 regardless of preset.
+    let _ = preset;
     (1280, 720)
 }
 
