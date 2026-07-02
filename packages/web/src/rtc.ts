@@ -1,10 +1,12 @@
 import {
   parseSignalingMessage,
+  parseControlMessage,
   type Connect,
   type Sdp,
   type Ice,
   type IceServer,
   type InputEvent,
+  type ControlMessage,
   type MouseButton,
 } from "@rd/protocol";
 
@@ -138,11 +140,17 @@ export interface SessionCallbacks {
   onError?: (message: string) => void;
   /** Called when the remote peer's video track arrives. */
   onRemoteStream?: (stream: MediaStream) => void;
+  /** The agent pushed a clip-set to us (manual pull reply, or both-mode auto). */
+  onClipboard?: (text: string) => void;
+  /** The "control" data channel opened (true) or closed (false). */
+  onControlState?: (open: boolean) => void;
 }
 
 export interface Session {
   /** Send an InputEvent over the "input" data channel (no-op until open). */
   sendInput: (ev: InputEvent) => void;
+  /** Send a ControlMessage over the "control" data channel (no-op until open). */
+  sendControl: (msg: ControlMessage) => void;
   /** Snapshot the peer connection's WebRTC stats (null before the pc exists). */
   getStats: () => Promise<RTCStatsReport | null>;
   /** Tear down the data channel, peer connection, and WebSocket. */
@@ -167,10 +175,11 @@ export function connectSession(
   deviceId: string,
   callbacks: SessionCallbacks = {},
 ): Session {
-  const { onState, onError, onRemoteStream } = callbacks;
+  const { onState, onError, onRemoteStream, onClipboard, onControlState } = callbacks;
 
   let pc: RTCPeerConnection | null = null;
   let channel: RTCDataChannel | null = null;
+  let control: RTCDataChannel | null = null;
   let sessionId: string | null = null;
   let closed = false;
 
@@ -202,6 +211,11 @@ export function connectSession(
       /* ignore */
     }
     try {
+      control?.close();
+    } catch {
+      /* ignore */
+    }
+    try {
       pc?.close();
     } catch {
       /* ignore */
@@ -214,6 +228,7 @@ export function connectSession(
       /* ignore */
     }
     channel = null;
+    control = null;
     pc = null;
     setState("closed");
   }
@@ -270,6 +285,25 @@ export function connectSession(
     };
     channel.onclose = () => {
       if (!closed) setState("closed");
+    };
+
+    control = pc.createDataChannel("control");
+    control.onopen = () => onControlState?.(true);
+    control.onclose = () => onControlState?.(false);
+    control.onmessage = (ev) => {
+      let raw: unknown;
+      try {
+        raw = JSON.parse(typeof ev.data === "string" ? ev.data : String(ev.data));
+      } catch {
+        return;
+      }
+      let msg: ControlMessage;
+      try {
+        msg = parseControlMessage(raw);
+      } catch {
+        return;
+      }
+      if (msg.t === "clip-set") onClipboard?.(msg.text);
     };
 
     void (async () => {
@@ -340,6 +374,11 @@ export function connectSession(
     sendInput(ev: InputEvent) {
       if (channel && channel.readyState === "open") {
         channel.send(JSON.stringify(ev));
+      }
+    },
+    sendControl(msg: ControlMessage) {
+      if (control && control.readyState === "open") {
+        control.send(JSON.stringify(msg));
       }
     },
     async getStats() {
