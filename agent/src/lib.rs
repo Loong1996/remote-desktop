@@ -1,3 +1,4 @@
+pub mod clipboard;
 pub mod config;
 pub mod control;
 pub mod input;
