@@ -36,6 +36,13 @@ beforeEach(() => {
   (HTMLElement.prototype as unknown as { requestFullscreen: () => Promise<void> }).requestFullscreen = vi
     .fn()
     .mockResolvedValue(undefined);
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: {
+      readText: vi.fn().mockResolvedValue("hello"),
+      writeText: vi.fn().mockResolvedValue(undefined),
+    },
+  });
 });
 
 describe("SessionView fullscreen", () => {
@@ -114,5 +121,29 @@ describe("SessionView fullscreen", () => {
     act(() => h.opts!.onState("connected"));
     fireEvent.change(screen.getByTestId("quality-select"), { target: { value: "6000000" } });
     expect(h.session.sendControl).toHaveBeenCalledWith({ t: "quality", bitrateBps: 6000000 });
+  });
+
+  it("sends clip-mode when the mode selector changes", () => {
+    render(<SessionView token="t" device={device} onExit={() => {}} />);
+    act(() => h.opts!.onState("connected"));
+    fireEvent.change(screen.getByTestId("clip-mode"), { target: { value: "both" } });
+    expect(h.session.sendControl).toHaveBeenCalledWith({ t: "clip-mode", mode: "both" });
+  });
+
+  it("reads the local clipboard and sends clip-set on 'send'", async () => {
+    render(<SessionView token="t" device={device} onExit={() => {}} />);
+    act(() => h.opts!.onState("connected"));
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("clip-send"));
+    });
+    expect(navigator.clipboard.readText).toHaveBeenCalled();
+    expect(h.session.sendControl).toHaveBeenCalledWith({ t: "clip-set", text: "hello" });
+  });
+
+  it("writes the local clipboard when a clip-set arrives", () => {
+    render(<SessionView token="t" device={device} onExit={() => {}} />);
+    act(() => h.opts!.onState("connected"));
+    act(() => h.opts!.onClipboard!("world"));
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith("world");
   });
 });

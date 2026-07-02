@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Device, InputEvent } from "@rd/protocol";
 import { API_BASE } from "../api.js";
+import { clipboardToSend, type ClipMode } from "../clipboard.js";
 import { COMBOS, comboEvents } from "../combos.js";
 import {
   connectSession,
@@ -76,6 +77,8 @@ export function SessionView({ token, device, onExit }: SessionViewProps) {
   const [showStats, setShowStats] = useState(false);
   const [stats, setStats] = useState<VideoStats | null>(null);
   const [bitrate, setBitrate] = useState(3_000_000);
+  const [clipMode, setClipMode] = useState<ClipMode>("off");
+  const lastClip = useRef<string>("");
   const statsSample = useRef<StatsSample | null>(null);
   const sessionRef = useRef<Session | null>(null);
   const surfaceRef = useRef<HTMLVideoElement | null>(null);
@@ -97,6 +100,12 @@ export function SessionView({ token, device, onExit }: SessionViewProps) {
       onError: setError,
       onRemoteStream: (stream) => {
         if (videoRef.current) videoRef.current.srcObject = stream;
+      },
+      onClipboard: (text) => {
+        // Received a clip-set (manual pull reply, or both-mode auto push): mirror it
+        // locally and record it so our own poller won't echo it back.
+        lastClip.current = text;
+        void navigator.clipboard.writeText(text).catch(() => {});
       },
     });
     sessionRef.current = session;
@@ -127,6 +136,28 @@ export function SessionView({ token, device, onExit }: SessionViewProps) {
   const onQuality = useCallback((bps: number) => {
     setBitrate(bps);
     sessionRef.current?.sendControl({ t: "quality", bitrateBps: bps });
+  }, []);
+
+  const onClipModeChange = useCallback((mode: ClipMode) => {
+    setClipMode(mode);
+    sessionRef.current?.sendControl({ t: "clip-mode", mode });
+  }, []);
+
+  const sendMyClipboard = useCallback(async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      const toSend = clipboardToSend(text, lastClip.current);
+      if (toSend !== null) {
+        lastClip.current = toSend;
+        sessionRef.current?.sendControl({ t: "clip-set", text: toSend });
+      }
+    } catch {
+      /* clipboard read denied / no focus */
+    }
+  }, []);
+
+  const pullRemoteClipboard = useCallback(() => {
+    sessionRef.current?.sendControl({ t: "clip-request" });
   }, []);
 
   // Release every currently-held key/button (e.g. on blur/mouse-leave/unmount)
@@ -182,6 +213,25 @@ export function SessionView({ token, device, onExit }: SessionViewProps) {
     }, 1000);
     return () => clearInterval(id);
   }, [connected, showStats]);
+
+  // Auto-sync local → remote in oneway/both while the tab has focus.
+  useEffect(() => {
+    if (!connected || clipMode === "off") return;
+    const id = setInterval(() => {
+      if (!document.hasFocus()) return;
+      void navigator.clipboard
+        .readText()
+        .then((text) => {
+          const toSend = clipboardToSend(text, lastClip.current);
+          if (toSend !== null) {
+            lastClip.current = toSend;
+            sessionRef.current?.sendControl({ t: "clip-set", text: toSend });
+          }
+        })
+        .catch(() => {});
+    }, 800);
+    return () => clearInterval(id);
+  }, [connected, clipMode]);
 
   const toggleFullscreen = useCallback(() => {
     const el = surfaceRef.current;
@@ -279,6 +329,33 @@ export function SessionView({ token, device, onExit }: SessionViewProps) {
               <option key={q.bps} value={q.bps}>{q.label}</option>
             ))}
           </select>
+          <select
+            data-testid="clip-mode"
+            value={clipMode}
+            disabled={!connected}
+            onChange={(e) => onClipModeChange(e.target.value as ClipMode)}
+            style={{ fontSize: 12 }}
+          >
+            <option value="off">剪贴板:手动</option>
+            <option value="oneway">剪贴板:单向</option>
+            <option value="both">剪贴板:双向</option>
+          </select>
+          <button
+            data-testid="clip-send"
+            disabled={!connected}
+            onClick={() => void sendMyClipboard()}
+            style={{ fontSize: 12 }}
+          >
+            发送剪贴板
+          </button>
+          <button
+            data-testid="clip-pull"
+            disabled={!connected}
+            onClick={pullRemoteClipboard}
+            style={{ fontSize: 12 }}
+          >
+            拉取远程
+          </button>
           <span
             aria-label={STATE_LABEL[state]}
             title={STATE_LABEL[state]}
