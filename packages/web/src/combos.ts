@@ -5,7 +5,7 @@ export interface Combo {
   codes: string[]; // KeyboardEvent.code values, held together
 }
 
-/** macOS被控端 chords the browser would otherwise swallow. */
+/** macOS chords the browser would otherwise swallow. */
 export const COMBOS: Combo[] = [
   { label: "Spotlight", codes: ["MetaLeft", "Space"] },
   { label: "App Switcher", codes: ["MetaLeft", "Tab"] },

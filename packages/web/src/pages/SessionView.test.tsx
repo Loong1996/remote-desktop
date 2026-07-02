@@ -82,6 +82,7 @@ describe("SessionView fullscreen", () => {
 
   it("sends a chord as kdown…kup in reverse on combo click", () => {
     render(<SessionView token="t" device={device} onExit={() => {}} />);
+    expect((screen.getByTestId("combo-Copy") as HTMLButtonElement).disabled).toBe(true);
     act(() => h.opts!.onState("connected"));
     fireEvent.click(screen.getByTestId("combo-Copy"));
     const sent = h.session.sendInput.mock.calls.map((c) => c[0]);
