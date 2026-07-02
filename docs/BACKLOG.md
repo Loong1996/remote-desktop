@@ -69,9 +69,11 @@ Input injection (`enigo`) and openh264 software encode already compile + pass on
 - (Note: the earlier "No RTL component tests for SessionView" item is now partly addressed — combos/stats/quality/clipboard have RTL coverage.)
 
 ### Resolution hot-switch + bitrate slider — deferred minors
-- **UI state not re-synced after agent-side reconnect** (`packages/web/src/pages/SessionView.tsx`): if the agent builds a fresh PeerSession while the component stays mounted, the agent restarts at defaults (hd / 3 Mbps) while the dropdown/slider still show the old selection. Self-reveals via the stats HUD; fix by re-sending resolution+quality on control-channel (re)open (the unused `onControlState` hook above is the natural place).
-- **No debounce on the resolution dropdown**: spamming it queues serialized capturer swaps (each blocks the pipeline thread on SCK stream start). Bounded and self-draining — video stalls briefly, session unaffected — but a small debounce would smooth it.
-- **Encoder `reset()` rebuild failure leaves old codec with new dims** (`agent/src/video/openh264_encoder.rs`): only on rare openh264 re-init failure; per-frame encode errors are caught+logged (video freezes at that size, session survives).
+All three original deferrals fixed in the follow-up pass (state re-sync on
+control-channel open via `onControlState`; 300ms debounce on the resolution
+dropdown + agent-side same-size swap guard; encoder `reset()` now defers the
+rebuild to `encode()` so a stale codec can never be fed new-dimension frames).
+The `onControlState` "wired but unused" item above is thereby resolved too.
 
 ## Deferred / carry-over items (fix opportunistically)
 

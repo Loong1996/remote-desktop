@@ -104,6 +104,13 @@ export function SessionView({ token, device, onExit }: SessionViewProps) {
   const pressedKeys = useRef<Set<string>>(new Set());
   const pressedButtons = useRef<Set<number>>(new Set());
   const sliderTimer = useRef<number | null>(null);
+  const resolutionTimer = useRef<number | null>(null);
+
+  // Live mirror of the user's stream settings for the control-channel re-sync
+  // below (the connect effect's callbacks would otherwise close over the
+  // initial state).
+  const streamPrefs = useRef({ resolution, bitrate, clipMode });
+  streamPrefs.current = { resolution, bitrate, clipMode };
 
   useEffect(() => {
     setState("connecting");
@@ -120,6 +127,16 @@ export function SessionView({ token, device, onExit }: SessionViewProps) {
         // locally and record it so our own poller won't echo it back.
         lastClip.current = text;
         void navigator.clipboard.writeText(text).catch(() => {});
+      },
+      onControlState: (open) => {
+        if (!open) return;
+        // The agent side may have built a fresh session (its defaults) while our
+        // UI kept the user's last selection — re-assert it. Same-value sends are
+        // no-ops on the agent (same-size swap skipped, same bitrate ignored).
+        const { resolution, bitrate, clipMode } = streamPrefs.current;
+        sessionRef.current?.sendControl({ t: "resolution", preset: resolution });
+        sessionRef.current?.sendControl({ t: "quality", bitrateBps: bitrate });
+        sessionRef.current?.sendControl({ t: "clip-mode", mode: clipMode });
       },
     });
     sessionRef.current = session;
@@ -165,17 +182,24 @@ export function SessionView({ token, device, onExit }: SessionViewProps) {
     }, 200);
   }, []);
 
-  // Clear a pending slider send on unmount.
+  // Clear pending debounced sends on unmount.
   useEffect(
     () => () => {
       if (sliderTimer.current !== null) window.clearTimeout(sliderTimer.current);
+      if (resolutionTimer.current !== null) window.clearTimeout(resolutionTimer.current);
     },
     [],
   );
 
   const onResolution = useCallback((preset: ResolutionPreset) => {
     setResolution(preset);
-    sessionRef.current?.sendControl({ t: "resolution", preset });
+    // Debounced: each switch swaps the agent's capturer (~0.5s stall), so rapid
+    // dropdown changes should only apply the final choice.
+    if (resolutionTimer.current !== null) window.clearTimeout(resolutionTimer.current);
+    resolutionTimer.current = window.setTimeout(() => {
+      resolutionTimer.current = null;
+      sessionRef.current?.sendControl({ t: "resolution", preset });
+    }, 300);
   }, []);
 
   const onClipModeChange = useCallback((mode: ClipMode) => {

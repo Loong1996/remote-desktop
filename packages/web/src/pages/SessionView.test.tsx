@@ -6,7 +6,11 @@ import { SessionView } from "./SessionView.js";
 // Share state with the hoisted mock: capture the opts passed to connectSession
 // so the test can drive connection state without a real WebRTC stack.
 const h = vi.hoisted(() => ({
-  opts: null as null | { onState: (s: string) => void; onClipboard?: (t: string) => void },
+  opts: null as null | {
+    onState: (s: string) => void;
+    onClipboard?: (t: string) => void;
+    onControlState?: (open: boolean) => void;
+  },
   session: {
     close: vi.fn(),
     sendInput: vi.fn(),
@@ -154,13 +158,41 @@ describe("SessionView fullscreen", () => {
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith("world");
   });
 
-  it("sends a resolution message when the preset changes, default hd", () => {
+  it("sends a debounced resolution message for the last preset chosen, default hd", () => {
+    vi.useFakeTimers();
+    try {
+      render(<SessionView token="t" device={device} onExit={() => {}} />);
+      act(() => h.opts!.onState("connected"));
+      const sel = screen.getByTestId("resolution-select") as HTMLSelectElement;
+      expect(sel.value).toBe("hd");
+      // Rapid double change: only the final preset goes on the wire.
+      fireEvent.change(sel, { target: { value: "native" } });
+      fireEvent.change(sel, { target: { value: "sd" } });
+      expect(h.session.sendControl).not.toHaveBeenCalledWith(
+        expect.objectContaining({ t: "resolution" }),
+      );
+      act(() => vi.advanceTimersByTime(350));
+      expect(h.session.sendControl).toHaveBeenCalledWith({ t: "resolution", preset: "sd" });
+      expect(h.session.sendControl).not.toHaveBeenCalledWith({ t: "resolution", preset: "native" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("re-sends resolution/quality/clip-mode when the control channel (re)opens", () => {
     render(<SessionView token="t" device={device} onExit={() => {}} />);
     act(() => h.opts!.onState("connected"));
-    const sel = screen.getByTestId("resolution-select") as HTMLSelectElement;
-    expect(sel.value).toBe("hd");
-    fireEvent.change(sel, { target: { value: "native" } });
-    expect(h.session.sendControl).toHaveBeenCalledWith({ t: "resolution", preset: "native" });
+    // Move clip mode off its default so the re-sync provably reads live state.
+    fireEvent.change(screen.getByTestId("clip-mode"), { target: { value: "both" } });
+    vi.clearAllMocks();
+    act(() => h.opts!.onControlState!(true));
+    expect(h.session.sendControl).toHaveBeenCalledWith({ t: "resolution", preset: "hd" });
+    expect(h.session.sendControl).toHaveBeenCalledWith({ t: "quality", bitrateBps: 3000000 });
+    expect(h.session.sendControl).toHaveBeenCalledWith({ t: "clip-mode", mode: "both" });
+    // A close event must not trigger sends.
+    vi.clearAllMocks();
+    act(() => h.opts!.onControlState!(false));
+    expect(h.session.sendControl).not.toHaveBeenCalled();
   });
 
   it("slider sends a debounced quality message and flips the preset to 自定义", () => {
