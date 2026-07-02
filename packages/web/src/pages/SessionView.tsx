@@ -11,6 +11,7 @@ import {
   type ConnectionState,
   type Session,
 } from "../rtc.js";
+import { parseVideoStats, type StatsSample, type VideoStats } from "../stats.js";
 
 export interface SessionViewProps {
   token: string;
@@ -66,6 +67,9 @@ export function SessionView({ token, device, onExit }: SessionViewProps) {
   // "Fill window" = maximize inside the browser viewport (CSS overlay), distinct
   // from OS fullscreen (Fullscreen API). Keeps the browser chrome/tabs visible.
   const [isMaximized, setIsMaximized] = useState(false);
+  const [showStats, setShowStats] = useState(false);
+  const [stats, setStats] = useState<VideoStats | null>(null);
+  const statsSample = useRef<StatsSample | null>(null);
   const sessionRef = useRef<Session | null>(null);
   const surfaceRef = useRef<HTMLVideoElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -149,6 +153,24 @@ export function SessionView({ token, device, onExit }: SessionViewProps) {
     return () => document.removeEventListener("fullscreenchange", onFsChange);
   }, []);
 
+  // Poll WebRTC stats ~1/s while the HUD is on and connected.
+  useEffect(() => {
+    if (!connected || !showStats) {
+      setStats(null);
+      statsSample.current = null;
+      return;
+    }
+    const id = setInterval(() => {
+      void sessionRef.current?.getStats().then((report) => {
+        if (!report) return;
+        const { stats: s, sample } = parseVideoStats(report, statsSample.current);
+        statsSample.current = sample;
+        setStats(s);
+      });
+    }, 1000);
+    return () => clearInterval(id);
+  }, [connected, showStats]);
+
   const toggleFullscreen = useCallback(() => {
     const el = surfaceRef.current;
     if (document.fullscreenElement) {
@@ -231,6 +253,9 @@ export function SessionView({ token, device, onExit }: SessionViewProps) {
           <button onClick={toggleFullscreen} disabled={!connected} data-testid="fullscreen-btn">
             {isFullscreen ? "Exit fullscreen" : "⛶ Fullscreen"}
           </button>
+          <button onClick={() => setShowStats((v) => !v)} disabled={!connected} data-testid="stats-btn">
+            {showStats ? "Hide stats" : "📊 Stats"}
+          </button>
           <span
             aria-label={STATE_LABEL[state]}
             title={STATE_LABEL[state]}
@@ -310,6 +335,21 @@ export function SessionView({ token, device, onExit }: SessionViewProps) {
                 }
         }
       />
+
+      {showStats && (
+        <div
+          data-testid="stats-hud"
+          style={{
+            position: "fixed", top: 12, left: 12, zIndex: 1001,
+            padding: "6px 10px", borderRadius: 6, background: "rgba(0,0,0,0.6)",
+            color: "#fff", fontFamily: "ui-monospace, monospace", fontSize: 12,
+          }}
+        >
+          {stats
+            ? `${stats.fps} fps · ${stats.kbps} kbps · ${stats.rttMs ?? "?"} ms · ${stats.width}×${stats.height}`
+            : "sampling…"}
+        </div>
+      )}
 
       {isMaximized && (
         <button

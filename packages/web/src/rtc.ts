@@ -143,6 +143,8 @@ export interface SessionCallbacks {
 export interface Session {
   /** Send an InputEvent over the "input" data channel (no-op until open). */
   sendInput: (ev: InputEvent) => void;
+  /** Snapshot the peer connection's WebRTC stats (null before the pc exists). */
+  getStats: () => Promise<RTCStatsReport | null>;
   /** Tear down the data channel, peer connection, and WebSocket. */
   close: () => void;
 }
@@ -339,6 +341,9 @@ export function connectSession(
       if (channel && channel.readyState === "open") {
         channel.send(JSON.stringify(ev));
       }
+    },
+    async getStats() {
+      return pc ? pc.getStats() : null;
     },
     close,
   };

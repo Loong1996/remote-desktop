@@ -7,7 +7,7 @@ import { SessionView } from "./SessionView.js";
 // so the test can drive connection state without a real WebRTC stack.
 const h = vi.hoisted(() => ({
   opts: null as null | { onState: (s: string) => void },
-  session: { close: vi.fn(), sendInput: vi.fn() },
+  session: { close: vi.fn(), sendInput: vi.fn(), getStats: vi.fn().mockResolvedValue(null) },
 }));
 
 vi.mock("../rtc.js", async (importOriginal) => {
@@ -92,5 +92,15 @@ describe("SessionView fullscreen", () => {
       { t: "kup", code: "KeyC" },
       { t: "kup", code: "MetaLeft" },
     ]);
+  });
+
+  it("toggles the stats HUD", () => {
+    render(<SessionView token="t" device={device} onExit={() => {}} />);
+    act(() => h.opts!.onState("connected"));
+    expect(screen.queryByTestId("stats-hud")).toBeNull();
+    fireEvent.click(screen.getByTestId("stats-btn"));
+    expect(screen.getByTestId("stats-hud")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("stats-btn"));
+    expect(screen.queryByTestId("stats-hud")).toBeNull();
   });
 });
