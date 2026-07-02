@@ -14,10 +14,12 @@ use webrtc::api::APIBuilder;
 use webrtc::data_channel::data_channel_message::DataChannelMessage;
 use webrtc::data_channel::RTCDataChannel;
 use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
+use webrtc::ice_transport::ice_credential_type::RTCIceCredentialType;
 use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::interceptor::registry::Registry;
 use webrtc::media::Sample;
 use webrtc::peer_connection::configuration::RTCConfiguration;
+use webrtc::peer_connection::policy::ice_transport_policy::RTCIceTransportPolicy;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
@@ -75,7 +77,19 @@ impl SampleSink for TrackSampleSink {
     }
 }
 
-fn to_rtc_ice(servers: Vec<IceServer>) -> Vec<RTCIceServer> {
+/// Map the session's relay policy to an ICE transport policy. `force-relay`
+/// restricts gathering to relayed (TURN) candidates only — for cross-NAT paths
+/// where direct/STUN candidates can't connect. Everything else allows all
+/// candidate types (host/srflx/relay).
+pub(crate) fn ice_transport_policy(relay_policy: &str) -> RTCIceTransportPolicy {
+    if relay_policy == "force-relay" {
+        RTCIceTransportPolicy::Relay
+    } else {
+        RTCIceTransportPolicy::All
+    }
+}
+
+pub(crate) fn to_rtc_ice(servers: Vec<IceServer>) -> Vec<RTCIceServer> {
     servers
         .into_iter()
         .map(|s| {
@@ -91,7 +105,11 @@ fn to_rtc_ice(servers: Vec<IceServer>) -> Vec<RTCIceServer> {
                 urls,
                 username: s.username.unwrap_or_default(),
                 credential: s.credential.unwrap_or_default(),
-                ..Default::default()
+                // TURN servers use long-term password credentials. webrtc-rs
+                // rejects a turn: URL whose credential_type isn't Password/Oauth
+                // ("invalid turn server credentials"), and Default is Unspecified,
+                // so set it explicitly. STUN URLs ignore it.
+                credential_type: RTCIceCredentialType::Password,
             }
         })
         .collect()
@@ -128,11 +146,12 @@ impl PeerSession {
     /// skipped.
     pub async fn new(
         ice_servers: Vec<IceServer>,
+        relay_policy: &str,
         local_ice_tx: UnboundedSender<serde_json::Value>,
     ) -> Result<PeerSession> {
         let injector = InputInjector::start();
         let tx = injector.sender();
-        let mut session = Self::build(ice_servers, local_ice_tx, tx).await?;
+        let mut session = Self::build(ice_servers, relay_policy, local_ice_tx, tx).await?;
         session._injector = Some(injector);
         Ok(session)
     }
@@ -141,14 +160,16 @@ impl PeerSession {
     /// of a real injector (no display/permission needed).
     pub async fn new_with_input_sink(
         ice_servers: Vec<IceServer>,
+        relay_policy: &str,
         local_ice_tx: UnboundedSender<serde_json::Value>,
         input_tx: Sender<InputEvent>,
     ) -> Result<PeerSession> {
-        Self::build(ice_servers, local_ice_tx, input_tx).await
+        Self::build(ice_servers, relay_policy, local_ice_tx, input_tx).await
     }
 
     async fn build(
         ice_servers: Vec<IceServer>,
+        relay_policy: &str,
         local_ice_tx: UnboundedSender<serde_json::Value>,
         input_tx: Sender<InputEvent>,
     ) -> Result<PeerSession> {
@@ -163,6 +184,7 @@ impl PeerSession {
 
         let config = RTCConfiguration {
             ice_servers: to_rtc_ice(ice_servers),
+            ice_transport_policy: ice_transport_policy(relay_policy),
             ..Default::default()
         };
         let pc = Arc::new(api.new_peer_connection(config).await?);
@@ -289,6 +311,63 @@ impl PeerSession {
             }
         }
         n
+    }
+}
+
+#[cfg(test)]
+mod to_rtc_ice_tests {
+    use super::{to_rtc_ice, RTCIceCredentialType};
+    use crate::protocol::IceServer;
+
+    #[test]
+    fn turn_server_gets_password_credential_type() {
+        // Regression: webrtc-rs rejects a turn: URL whose credential_type is the
+        // Default (Unspecified) with "invalid turn server credentials". The
+        // mapping must set Password so real TURN relay works.
+        let servers = vec![IceServer {
+            urls: serde_json::json!("turn:192.168.5.122:3478"),
+            username: Some("rduser".into()),
+            credential: Some("rdpass".into()),
+        }];
+        let rtc = to_rtc_ice(servers);
+        assert_eq!(rtc.len(), 1);
+        assert_eq!(rtc[0].username, "rduser");
+        assert_eq!(rtc[0].credential, "rdpass");
+        assert_eq!(rtc[0].credential_type, RTCIceCredentialType::Password);
+    }
+
+    #[test]
+    fn stun_and_turn_urls_parse_into_multiple_servers() {
+        let servers = vec![
+            IceServer { urls: serde_json::json!("stun:h:3478"), username: None, credential: None },
+            IceServer {
+                urls: serde_json::json!("turn:h:3478"),
+                username: Some("u".into()),
+                credential: Some("p".into()),
+            },
+        ];
+        let rtc = to_rtc_ice(servers);
+        assert_eq!(rtc.len(), 2);
+        assert_eq!(rtc[0].urls, vec!["stun:h:3478"]);
+        assert_eq!(rtc[1].urls, vec!["turn:h:3478"]);
+    }
+}
+
+#[cfg(test)]
+mod ice_transport_policy_tests {
+    use super::ice_transport_policy;
+    use webrtc::peer_connection::policy::ice_transport_policy::RTCIceTransportPolicy;
+
+    #[test]
+    fn force_relay_maps_to_relay_only() {
+        assert_eq!(ice_transport_policy("force-relay"), RTCIceTransportPolicy::Relay);
+    }
+
+    #[test]
+    fn other_policies_allow_all_candidate_types() {
+        assert_eq!(ice_transport_policy("relay-fallback"), RTCIceTransportPolicy::All);
+        assert_eq!(ice_transport_policy("direct-only"), RTCIceTransportPolicy::All);
+        assert_eq!(ice_transport_policy(""), RTCIceTransportPolicy::All);
     }
 }
 

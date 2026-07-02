@@ -2,6 +2,7 @@ import { describe, it, expect, test } from "vitest";
 import { parseSignalingMessage, parseInputEvent } from "@rd/protocol";
 import {
   deriveWsUrl,
+  iceTransportPolicyFor,
   buildConnect,
   buildOffer,
   buildIce,
@@ -33,6 +34,17 @@ describe("deriveWsUrl", () => {
 
   it("url-encodes the token (query form-encoding: space→+, slash/plus escaped)", () => {
     expect(deriveWsUrl("http://h", "a b/c+d")).toBe("ws://h/?token=a+b%2Fc%2Bd");
+  });
+});
+
+describe("iceTransportPolicyFor", () => {
+  it("maps force-relay to 'relay' (TURN-only)", () => {
+    expect(iceTransportPolicyFor("force-relay")).toBe("relay");
+  });
+  it("maps other policies and undefined to 'all'", () => {
+    expect(iceTransportPolicyFor("relay-fallback")).toBe("all");
+    expect(iceTransportPolicyFor("direct-only")).toBe("all");
+    expect(iceTransportPolicyFor(undefined)).toBe("all");
   });
 });
 

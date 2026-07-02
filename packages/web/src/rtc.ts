@@ -19,6 +19,15 @@ import {
  * the JWT as a `?token=` query parameter. `http` → `ws`, `https` → `wss`;
  * any explicit path/port on the base URL is preserved.
  */
+/**
+ * Map the session's relay policy to an RTCPeerConnection `iceTransportPolicy`.
+ * `force-relay` → "relay" (only relayed/TURN candidates, for cross-NAT paths
+ * where direct/STUN can't connect); everything else → "all".
+ */
+export function iceTransportPolicyFor(relayPolicy?: string): RTCIceTransportPolicy {
+  return relayPolicy === "force-relay" ? "relay" : "all";
+}
+
 export function deriveWsUrl(serverUrl: string, token: string): string {
   const u = new URL(serverUrl);
   u.protocol = u.protocol === "https:" ? "wss:" : "ws:";
@@ -226,11 +235,14 @@ export function connectSession(
     }
   };
 
-  function startPeer(iceServers: IceServer[], sid: string): void {
+  function startPeer(iceServers: IceServer[], sid: string, relayPolicy?: string): void {
     sessionId = sid;
     setState("signaling");
 
-    pc = new RTCPeerConnection({ iceServers: iceServers as RTCIceServer[] });
+    pc = new RTCPeerConnection({
+      iceServers: iceServers as RTCIceServer[],
+      iceTransportPolicy: iceTransportPolicyFor(relayPolicy),
+    });
 
     pc.onicecandidate = (e) => {
       if (e.candidate && sessionId) {
@@ -284,7 +296,8 @@ export function connectSession(
       if (rec.type === "session-ready") {
         const sid = rec.sessionId;
         const iceServers = (rec.iceServers as IceServer[]) ?? [];
-        if (typeof sid === "string") startPeer(iceServers, sid);
+        const relayPolicy = typeof rec.relayPolicy === "string" ? rec.relayPolicy : undefined;
+        if (typeof sid === "string") startPeer(iceServers, sid, relayPolicy);
         return;
       }
       if (rec.type === "error") {

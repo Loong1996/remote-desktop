@@ -21,7 +21,7 @@ async fn agent_trickles_ice_and_forwards_input() {
     let (agent_ice_tx, mut agent_ice_rx) = mpsc::unbounded_channel::<serde_json::Value>();
     let (input_tx, input_rx) = std::sync::mpsc::channel::<rd_agent::input::InputEvent>();
     let agent = Arc::new(
-        PeerSession::new_with_input_sink(vec![], agent_ice_tx, input_tx)
+        PeerSession::new_with_input_sink(vec![], "relay-fallback", agent_ice_tx, input_tx)
             .await
             .unwrap(),
     );
@@ -92,7 +92,7 @@ async fn agent_trickles_ice_and_forwards_input() {
 #[tokio::test]
 async fn pre_offer_remote_candidate_is_buffered_not_dropped() {
     let (agent_ice_tx, _rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
-    let agent = rd_agent::webrtc_peer::PeerSession::new(vec![], agent_ice_tx)
+    let agent = rd_agent::webrtc_peer::PeerSession::new(vec![], "relay-fallback", agent_ice_tx)
         .await
         .unwrap();
     // A candidate arriving before accept_offer must be accepted (buffered), not error.
