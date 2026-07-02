@@ -13,6 +13,7 @@ pub enum ControlMessage {
         #[serde(rename = "bitrateBps")]
         bitrate_bps: u32,
     },
+    Resolution { preset: ResolutionPreset },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -21,6 +22,15 @@ pub enum ClipMode {
     Off,
     Oneway,
     Both,
+}
+
+/// Capture-resolution presets, mirrored from the web's ResolutionPreset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ResolutionPreset {
+    Sd,
+    Hd,
+    Native,
 }
 
 #[cfg(test)]
@@ -34,6 +44,9 @@ mod tests {
             (r#"{"t":"clip-request"}"#, ControlMessage::ClipRequest),
             (r#"{"t":"clip-mode","mode":"both"}"#, ControlMessage::ClipMode { mode: ClipMode::Both }),
             (r#"{"t":"quality","bitrateBps":3000000}"#, ControlMessage::Quality { bitrate_bps: 3_000_000 }),
+            (r#"{"t":"resolution","preset":"native"}"#, ControlMessage::Resolution { preset: ResolutionPreset::Native }),
+            (r#"{"t":"resolution","preset":"sd"}"#, ControlMessage::Resolution { preset: ResolutionPreset::Sd }),
+            (r#"{"t":"resolution","preset":"hd"}"#, ControlMessage::Resolution { preset: ResolutionPreset::Hd }),
         ];
         for (json, want) in cases {
             let got: ControlMessage = serde_json::from_str(json).unwrap();
@@ -45,5 +58,10 @@ mod tests {
     fn serializes_clip_mode_with_web_tags() {
         let s = serde_json::to_string(&ControlMessage::ClipMode { mode: ClipMode::Oneway }).unwrap();
         assert_eq!(s, r#"{"t":"clip-mode","mode":"oneway"}"#);
+    }
+
+    #[test]
+    fn rejects_unknown_resolution_preset() {
+        assert!(serde_json::from_str::<ControlMessage>(r#"{"t":"resolution","preset":"8k"}"#).is_err());
     }
 }

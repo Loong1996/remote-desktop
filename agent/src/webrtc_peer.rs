@@ -263,6 +263,7 @@ fn wire_control(dc: Arc<RTCDataChannel>, bitrate_tx: Sender<u32>, last_clipboard
                         poller_on.store(false, Ordering::SeqCst);
                     }
                 }
+                ControlMessage::Resolution { .. } => { /* wired in a later task */ }
             }
         })
     }));
