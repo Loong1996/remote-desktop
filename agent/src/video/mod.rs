@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use crate::control::ResolutionPreset;
+
 pub mod convert;
 pub mod openh264_encoder;
 pub mod pipeline;
@@ -32,6 +34,33 @@ pub fn fit_aspect(disp_w: u32, disp_h: u32, max_w: u32, max_h: u32) -> (u32, u32
     let w = (disp_w as f64 * scale).round() as u32;
     let h = (disp_h as f64 * scale).round() as u32;
     (even(w).max(2), even(h).max(2))
+}
+
+/// Map a resolution preset to a capture size for a display of logical size
+/// `dw`×`dh`. Pure so the mapping is unit-testable without a display.
+pub fn preset_size(preset: ResolutionPreset, dw: u32, dh: u32) -> (u32, u32) {
+    match preset {
+        ResolutionPreset::Sd => fit_aspect(dw, dh, 1280, 720),
+        ResolutionPreset::Hd => (even(dw).max(2), even(dh).max(2)),
+        // Retina physical pixels (2× logical). On a non-Retina display this is
+        // an SCK upscale — accepted per the design spec.
+        ResolutionPreset::Native => (even(dw * 2).max(2), even(dh * 2).max(2)),
+    }
+}
+
+/// Capture size for `preset` on the main display. Falls back to 1280×720 when
+/// the display query fails (same fallback as target_capture_size).
+pub fn preset_capture_size(preset: ResolutionPreset) -> (u32, u32) {
+    #[cfg(target_os = "macos")]
+    {
+        match sck_capturer::main_display_size() {
+            Ok((dw, dh)) => return preset_size(preset, dw, dh),
+            Err(e) => {
+                tracing::warn!("main display size query failed ({e}); using 1280x720");
+            }
+        }
+    }
+    (1280, 720)
 }
 
 /// The capture size to use for the main display: its aspect ratio fit within
@@ -156,6 +185,29 @@ mod fit_aspect_tests {
         let (w, h) = fit_aspect(1471, 957, 1280, 720); // odd inputs
         assert_eq!(w % 2, 0);
         assert_eq!(h % 2, 0);
+    }
+}
+
+#[cfg(test)]
+mod preset_size_tests {
+    use super::preset_size;
+    use crate::control::ResolutionPreset;
+
+    #[test]
+    fn sd_fits_720p_box() {
+        // 1512x982 logical display → aspect-fit inside 1280x720, even dims.
+        assert_eq!(preset_size(ResolutionPreset::Sd, 1512, 982), (1108, 720));
+    }
+
+    #[test]
+    fn hd_is_display_logical_size_evened() {
+        assert_eq!(preset_size(ResolutionPreset::Hd, 1512, 982), (1512, 982));
+        assert_eq!(preset_size(ResolutionPreset::Hd, 1513, 983), (1512, 982));
+    }
+
+    #[test]
+    fn native_is_double_logical_evened() {
+        assert_eq!(preset_size(ResolutionPreset::Native, 1512, 982), (3024, 1964));
     }
 }
 
