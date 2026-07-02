@@ -94,11 +94,18 @@ impl VideoPipeline {
                         }
                     }
                 }
-                let frame = match frame_rx.recv_timeout(std::time::Duration::from_millis(200)) {
+                let mut frame = match frame_rx.recv_timeout(std::time::Duration::from_millis(200)) {
                     Ok(f) => f,
                     Err(mpsc::RecvTimeoutError::Timeout) => continue,
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 };
+                // Real-time stream: when capture outpaces convert+encode, skip to
+                // the newest queued frame. Encoding the backlog would only show
+                // the past — latency and memory would grow without bound (at
+                // native Retina a single BGRA frame is ~22 MB).
+                while let Ok(newer) = frame_rx.try_recv() {
+                    frame = newer;
+                }
                 let i420 = bgra_to_i420(&frame, dst_w, dst_h);
                 let force_idr = n.is_multiple_of(keyframe_interval) || force_next_idr;
                 force_next_idr = false;
@@ -215,6 +222,66 @@ mod cmd_tests {
         assert!(wait_until(2000, || started.lock().unwrap().len() >= 2), "factory not invoked");
         assert_eq!(started.lock().unwrap()[1], (4, 4));
         assert!(wait_until(2000, || events.lock().unwrap().contains(&Ev::Reset)), "encoder not reset");
+    }
+
+    /// Emits gray frames whose luma encodes the frame index (brighter = newer)
+    /// every 5ms, so a test can tell WHICH frame the encoder actually saw.
+    struct CountingSource;
+    impl ScreenCapturer for CountingSource {
+        fn start(&mut self, sink: std::sync::mpsc::Sender<Frame>) -> anyhow::Result<()> {
+            std::thread::spawn(move || {
+                let mut i: u32 = 0;
+                loop {
+                    let gray = (i * 3).min(255) as u8;
+                    let f = Frame { width: 2, height: 2, stride: 8, data: vec![gray; 16], ts_micros: 0 };
+                    if sink.send(f).is_err() {
+                        break;
+                    }
+                    i += 1;
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            });
+            Ok(())
+        }
+    }
+
+    /// Takes ~40ms per frame and records the luma of each frame it encodes.
+    struct SlowEncoder {
+        lumas: Arc<Mutex<Vec<u8>>>,
+    }
+    impl VideoEncoder for SlowEncoder {
+        fn encode(&mut self, f: &I420, _idr: bool) -> anyhow::Result<EncodedSample> {
+            self.lumas.lock().unwrap().push(f.y[0]);
+            std::thread::sleep(Duration::from_millis(40));
+            Ok(EncodedSample { data: vec![0], duration: Duration::from_millis(33), keyframe: true })
+        }
+    }
+
+    #[test]
+    fn encoder_slower_than_capture_skips_to_the_newest_frame() {
+        let lumas = Arc::new(Mutex::new(Vec::new()));
+        let (_tx, rx) = std::sync::mpsc::channel::<PipelineCmd>();
+        let started = Arc::new(Mutex::new(Vec::new()));
+        let st = started.clone();
+        let p = VideoPipeline::start(
+            Box::new(CountingSource),
+            Box::new(SlowEncoder { lumas: lumas.clone() }),
+            Arc::new(NullSink), 2, 2, 60, rx,
+            Box::new(move |w, h| Box::new(LoopingSource { w, h, started: st.clone() })),
+        );
+        // Capture emits every 5ms, encode takes 40ms: without drop-to-latest the
+        // backlog (and end-to-end latency) grows without bound. After ~500ms the
+        // encoder must be seeing RECENT frames, not the 10th-oldest.
+        std::thread::sleep(Duration::from_millis(500));
+        drop(p);
+        let seen = lumas.lock().unwrap().clone();
+        assert!(!seen.is_empty());
+        // ~500ms / 5ms = ~100 frames emitted (luma ≈ min(3i, 255) through the
+        // BGRA→I420 matrix, monotonic in i). Backlog behavior would leave the
+        // last encoded frame at i≈12 (luma ≈ 45); drop-to-latest lands near the
+        // freshest (i ≥ 60 → luma well above 120).
+        let last = *seen.last().unwrap();
+        assert!(last > 120, "encoder stuck on stale frames: last luma {last}, seen {seen:?}");
     }
 
     #[test]
