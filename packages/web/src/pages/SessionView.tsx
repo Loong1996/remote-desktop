@@ -61,6 +61,7 @@ export function SessionView({ token, device, onExit }: SessionViewProps) {
   const [state, setState] = useState<ConnectionState>("connecting");
   const [error, setError] = useState<string | null>(null);
   const [log, setLog] = useState<string[]>([]);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const sessionRef = useRef<Session | null>(null);
   const surfaceRef = useRef<HTMLVideoElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -123,6 +124,29 @@ export function SessionView({ token, device, onExit }: SessionViewProps) {
     return () => el.removeEventListener("wheel", onWheelNative);
   }, [emit]);
 
+  // Fullscreen: fill the whole monitor with the remote screen. Track the state
+  // (the user can also exit with Esc / the OS), focusing the surface on enter so
+  // keyboard capture works immediately, and releasing held keys on exit.
+  useEffect(() => {
+    const onFsChange = () => {
+      const fs = document.fullscreenElement === surfaceRef.current;
+      setIsFullscreen(fs);
+      if (fs) surfaceRef.current?.focus();
+      else releaseAll();
+    };
+    document.addEventListener("fullscreenchange", onFsChange);
+    return () => document.removeEventListener("fullscreenchange", onFsChange);
+  }, []);
+
+  const toggleFullscreen = useCallback(() => {
+    const el = surfaceRef.current;
+    if (document.fullscreenElement) {
+      void document.exitFullscreen();
+    } else {
+      void el?.requestFullscreen?.();
+    }
+  }, []);
+
   function onMouseMove(e: React.MouseEvent) {
     if (!connected || !surfaceRef.current) return;
     const el = surfaceRef.current;
@@ -178,7 +202,10 @@ export function SessionView({ token, device, onExit }: SessionViewProps) {
     <div style={{ maxWidth: 720, margin: "5vh auto", fontFamily: "system-ui" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <button onClick={onExit}>← Back to devices</button>
-        <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <span style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <button onClick={toggleFullscreen} disabled={!connected} data-testid="fullscreen-btn">
+            {isFullscreen ? "Exit fullscreen" : "⛶ Fullscreen"}
+          </button>
           <span
             aria-label={STATE_LABEL[state]}
             title={STATE_LABEL[state]}
@@ -216,11 +243,21 @@ export function SessionView({ token, device, onExit }: SessionViewProps) {
         onKeyUp={onKeyUp}
         onBlur={releaseAll}
         onContextMenu={(e) => e.preventDefault()}
-        style={{
-          width: "100%", height: 360, borderRadius: 8, border: "2px solid #cbd5e1",
-          background: "#0f172a", outline: "none", objectFit: "contain",
-          cursor: connected ? "crosshair" : "default",
-        }}
+        style={
+          isFullscreen
+            ? {
+                // Fullscreen element: fill the monitor, letterbox the remote
+                // screen (aspect-fit), no chrome.
+                width: "100%", height: "100%", background: "#000",
+                objectFit: "contain", outline: "none", border: "none",
+                cursor: connected ? "crosshair" : "default",
+              }
+            : {
+                width: "100%", height: 360, borderRadius: 8, border: "2px solid #cbd5e1",
+                background: "#0f172a", outline: "none", objectFit: "contain",
+                cursor: connected ? "crosshair" : "default",
+              }
+        }
       />
 
       <h3 style={{ marginBottom: 4 }}>Sent events</h3>
