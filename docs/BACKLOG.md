@@ -68,6 +68,11 @@ Input injection (`enigo`) and openh264 software encode already compile + pass on
 - **Blocking `pbpaste`/`pbcopy` in async handlers** (`agent/src/webrtc_peer.rs`): clipboard subprocess calls run inline in the control message handler / 800ms poller rather than `spawn_blocking`. Accepted (small payloads, human cadence); revisit if it parks a runtime worker under load.
 - (Note: the earlier "No RTL component tests for SessionView" item is now partly addressed — combos/stats/quality/clipboard have RTL coverage.)
 
+### Resolution hot-switch + bitrate slider — deferred minors
+- **UI state not re-synced after agent-side reconnect** (`packages/web/src/pages/SessionView.tsx`): if the agent builds a fresh PeerSession while the component stays mounted, the agent restarts at defaults (hd / 3 Mbps) while the dropdown/slider still show the old selection. Self-reveals via the stats HUD; fix by re-sending resolution+quality on control-channel (re)open (the unused `onControlState` hook above is the natural place).
+- **No debounce on the resolution dropdown**: spamming it queues serialized capturer swaps (each blocks the pipeline thread on SCK stream start). Bounded and self-draining — video stalls briefly, session unaffected — but a small debounce would smooth it.
+- **Encoder `reset()` rebuild failure leaves old codec with new dims** (`agent/src/video/openh264_encoder.rs`): only on rare openh264 re-init failure; per-frame encode errors are caught+logged (video freezes at that size, session survives).
+
 ## Deferred / carry-over items (fix opportunistically)
 
 ### Done in Plan 3
