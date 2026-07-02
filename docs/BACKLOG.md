@@ -62,6 +62,12 @@ Input injection (`enigo`) and openh264 software encode already compile + pass on
 - **Scroll direction unverified against real hardware.** Unit tests pin magnitude/sign of the mapper only; confirm browser `deltaY>0` (down) ↔ `enigo::scroll(+)` physically in the smoke run.
 - **`enigo.main_display()` queried on every `MMove`** (`agent/src/input.rs`). Fine at rAF-coalesced ~60/s, but caching display size avoids a syscall per move. Trivial.
 
+### High-value UX pass (combos / stats / clipboard / quality) — deferred minors
+- **Clipboard poller duplicate-spawn race** (`agent/src/webrtc_peer.rs`, `start_clipboard_poller`): under rapid `both→off→both` toggling a `store(false)` can land between an in-flight poller's 800ms ticks, defeating the `swap(true)` idempotency guard → two concurrent pollers. Harmless (shared `last_clipboard` dedupes sends, both exit on next `off`/close); a generation token would make start/stop precise.
+- **`onControlState` wired but unused** (`packages/web/src/rtc.ts`): the control-channel open/close callback is plumbed through `connectSession` but `SessionView` doesn't consume it. Harmless dead surface, kept for a future "control ready" indicator.
+- **Blocking `pbpaste`/`pbcopy` in async handlers** (`agent/src/webrtc_peer.rs`): clipboard subprocess calls run inline in the control message handler / 800ms poller rather than `spawn_blocking`. Accepted (small payloads, human cadence); revisit if it parks a runtime worker under load.
+- (Note: the earlier "No RTL component tests for SessionView" item is now partly addressed — combos/stats/quality/clipboard have RTL coverage.)
+
 ## Deferred / carry-over items (fix opportunistically)
 
 ### Done in Plan 3
