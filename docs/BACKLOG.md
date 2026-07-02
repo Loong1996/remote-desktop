@@ -4,7 +4,9 @@
 
 ## Status
 
-**MVP functionally complete (macOS):** the browser shows the被控端's live macOS screen (`<video>`) AND mouse/keyboard injection works — both媒体 flows over one WebRTC PeerConnection (video track agent→web, input data channel web→agent). This is the design's MVP scope (画面传输 + 键鼠控制). Remaining work is hardening + cross-platform, not new MVP capability.
+**MVP functionally complete (macOS) — live end-to-end validated 2026-07-02:** the browser shows the被控端's live macOS screen (`<video>`) AND mouse/keyboard injection works — both媒体 flows over one WebRTC PeerConnection (video track agent→web, input data channel web→agent). This is the design's MVP scope (画面传输 + 键鼠控制). Remaining work is hardening + cross-platform, not new MVP capability.
+
+**Real e2e smoke (server + agent + real Chrome over WebRTC), 2026-07-02:** paired via REST → device online → session Connected → **browser rendered the live macOS desktop** (real ScreenCaptureKit capture, H.264 → WebRTC → `<video>`); **injected keystrokes landed on the controlled machine** (typed text appeared in a terminal on the被控端). This run also surfaced a real bug — keyboard injection failed on macOS because enigo's `Key::Unicode` path hit `UCKeyTranslate` (OSStatus -25340) in the agent's background process — **fixed** by mapping `KeyboardEvent.code` straight to macOS virtual keycodes (`kVK_*`) and injecting via `enigo.raw()` (`agent/src/input.rs`, `code_to_macos_keycode`; keycode table independently reviewed, all ~100 entries verified). Re-validated: zero `UCKeyTranslate` errors, text lands.
 
 | Plan | Scope | Status |
 |------|-------|--------|
@@ -16,7 +18,7 @@
 | 5 | **macOS video hardening** (SckCapturer owns/stops its SCStream on session end + 720p/30fps capture; agent+web stuck-key release; letterbox coord mapping; convert 0×0 guard) | ✅ merged |
 | 6 | **Agent reliability + session lifecycle** (agent WS auto-reconnect w/ exponential backoff, fatal-stop on bad-token; server sends `peer-left` on any connection close; agent handles `peer-left` → releases session) | ✅ done (branch `plan6-agent-reliability`) |
 
-Tests currently green: Node `npm test` → 66; agent `cargo test` → 39 (+2 `#[ignore]` real-hardware: SCK capture, enigo injection); `npm run typecheck` clean; `cargo clippy --all-targets` clean; web `@rd/web build` clean.
+Tests currently green: Node `npm test` → 66; agent `cargo test` → 40 (+2 `#[ignore]` real-hardware: SCK capture, enigo injection); `npm run typecheck` clean; `cargo clippy --all-targets` clean; web `@rd/web build` clean.
 
 Plan 6 docs: `docs/superpowers/specs/2026-07-02-plan6-agent-reliability-design.md`, `docs/superpowers/plans/2026-07-02-plan6-agent-reliability.md`; reliability smoke notes in `plan4-video-smoke.md`.
 
