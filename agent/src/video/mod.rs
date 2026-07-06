@@ -202,6 +202,50 @@ mod preset_size_tests {
     }
 }
 
+/// True if a received RTCP compound contains a keyframe request (PLI or FIR).
+/// The browser sends these on packet loss; the agent replies with a fresh IDR.
+pub fn rtcp_requests_keyframe(pkts: &[Box<dyn rtcp::packet::Packet + Send + Sync>]) -> bool {
+    use rtcp::payload_feedbacks::full_intra_request::FullIntraRequest;
+    use rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
+    pkts.iter().any(|p| {
+        let a = p.as_any();
+        a.is::<PictureLossIndication>() || a.is::<FullIntraRequest>()
+    })
+}
+
+#[cfg(test)]
+mod rtcp_tests {
+    use super::rtcp_requests_keyframe;
+    use rtcp::packet::Packet;
+    use rtcp::payload_feedbacks::picture_loss_indication::PictureLossIndication;
+    use rtcp::payload_feedbacks::full_intra_request::FullIntraRequest;
+    use rtcp::receiver_report::ReceiverReport;
+
+    fn boxed(p: impl Packet + Send + Sync + 'static) -> Box<dyn Packet + Send + Sync> {
+        Box::new(p)
+    }
+
+    #[test]
+    fn pli_requests_keyframe() {
+        let pkts = vec![boxed(PictureLossIndication { sender_ssrc: 1, media_ssrc: 2 })];
+        assert!(rtcp_requests_keyframe(&pkts));
+    }
+    #[test]
+    fn fir_requests_keyframe() {
+        let pkts = vec![boxed(FullIntraRequest { sender_ssrc: 1, media_ssrc: 2, fir: vec![] })];
+        assert!(rtcp_requests_keyframe(&pkts));
+    }
+    #[test]
+    fn receiver_report_does_not() {
+        let pkts = vec![boxed(ReceiverReport::default())];
+        assert!(!rtcp_requests_keyframe(&pkts));
+    }
+    #[test]
+    fn empty_does_not() {
+        assert!(!rtcp_requests_keyframe(&[]));
+    }
+}
+
 #[cfg(test)]
 mod source_selection_tests {
     use serial_test::serial;

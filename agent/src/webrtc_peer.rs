@@ -448,7 +448,17 @@ impl PeerSession {
             "video".to_owned(),
             "rd-agent".to_owned(),
         ));
-        pc.add_track(video_track.clone()).await?;
+        let rtp_sender = pc.add_track(video_track.clone()).await?;
+        // Relay browser keyframe requests (PLI/FIR) to the pipeline so a lost
+        // frame recovers immediately instead of waiting for the 4s interval.
+        let kf_cmd_tx = cmd_tx.clone();
+        tokio::spawn(async move {
+            while let Ok((pkts, _)) = rtp_sender.read_rtcp().await {
+                if crate::video::rtcp_requests_keyframe(&pkts) {
+                    let _ = kf_cmd_tx.send(crate::video::pipeline::PipelineCmd::ForceKeyframe);
+                }
+            }
+        });
         let sink: Arc<dyn SampleSink> = Arc::new(TrackSampleSink {
             track: video_track,
             handle: tokio::runtime::Handle::current(),
