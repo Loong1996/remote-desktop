@@ -75,6 +75,12 @@ dropdown + agent-side same-size swap guard; encoder `reset()` now defers the
 rebuild to `encode()` so a stale codec can never be fed new-dimension frames).
 The `onControlState` "wired but unused" item above is thereby resolved too.
 
+### Encoding smoothness (timestamp / keyframe-PLI / VideoToolbox) — deferred minors
+- **VideoToolbox: `CVPixelBufferCreateWithBytes` copies BGRA per frame** (`agent/src/video/videotoolbox_encoder.rs`). An IOSurface-backed `CVPixelBufferPool` (or feeding SCK's own CVPixelBuffer straight through) would make the capture→encode path zero-copy — the "aggressive" VT depth we deferred. Meaningful CPU/bandwidth-of-memory win at native Retina.
+- **VT size guard runs after the `needs_reopen` session rebuild** (`videotoolbox_encoder.rs`): a malformed too-small frame arriving right after `reset()` churns a VT session recreate before the guard rejects it. Harmless (next real frame encodes fine); reorder the guard before reopen when convenient. The `reset_reopens_at_new_frame_resolution` test comment also slightly misstates the pre-fix failure mode (silent wrong-size, not an error) — correct it.
+- **RTCP `read_rtcp` task outlives the pipeline** (`agent/src/webrtc_peer.rs`): tied to the peer connection, not the pipeline; a `ForceKeyframe` send after the pipeline drops just returns Err and is ignored. Task lingers until the PC closes. Harmless.
+- **AVCC→Annex-B assumes a 4-byte NAL length prefix** (guarded by a `debug_assert`): VT H.264 always uses 4-byte AVCC lengths, so correct in practice; the assert documents it.
+
 ## Deferred / carry-over items (fix opportunistically)
 
 ### Done in Plan 3
