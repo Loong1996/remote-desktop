@@ -2,6 +2,20 @@ use crate::video::convert::bgra_to_i420;
 use crate::video::{ScreenCapturer, SampleSink, VideoEncoder};
 use std::sync::mpsc;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+/// Wall-clock gap between successive emitted samples, so the RTP media clock
+/// tracks real time (webrtc-rs advances the RTP timestamp by sample.duration).
+/// `prev` is None for the first sample. Clamped so a long idle gap can't leap
+/// the RTP clock and a zero gap can't stall it.
+pub fn sample_duration(prev: Option<Instant>, now: Instant, fallback: Duration) -> Duration {
+    match prev {
+        None => fallback,
+        Some(p) => now
+            .saturating_duration_since(p)
+            .clamp(Duration::from_millis(1), Duration::from_millis(1000)),
+    }
+}
 
 /// Commands applied by the pipeline thread between frames.
 pub enum PipelineCmd {
@@ -46,6 +60,7 @@ impl VideoPipeline {
             let (mut dst_w, mut dst_h) = (dst_w, dst_h);
             let mut n: u64 = 0;
             let mut force_next_idr = false;
+            let mut last_emit: Option<Instant> = None;
             // Stop when the VideoPipeline is dropped: its `_stop` Sender drops,
             // so try_recv() returns Disconnected (NOT Empty). Loop only while
             // Empty; anything else (including Disconnected) exits.
@@ -110,7 +125,12 @@ impl VideoPipeline {
                 let force_idr = n.is_multiple_of(keyframe_interval) || force_next_idr;
                 force_next_idr = false;
                 match encoder.encode(&i420, force_idr) {
-                    Ok(sample) => sink.write(sample),
+                    Ok(mut sample) => {
+                        let now = Instant::now();
+                        sample.duration = sample_duration(last_emit, now, sample.duration);
+                        last_emit = Some(now);
+                        sink.write(sample);
+                    }
                     Err(e) => tracing::warn!("encode failed on frame {n}: {e}"),
                 }
                 n += 1;
@@ -304,5 +324,34 @@ mod cmd_tests {
         std::thread::sleep(Duration::from_millis(300)); // several frame cycles
         assert_eq!(started.lock().unwrap().len(), 1, "capturer was restarted");
         assert!(!events.lock().unwrap().contains(&Ev::Reset), "encoder was reset");
+    }
+}
+
+#[cfg(test)]
+mod duration_tests {
+    use super::sample_duration;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn first_frame_uses_fallback() {
+        let t = Instant::now();
+        assert_eq!(sample_duration(None, t, Duration::from_millis(33)), Duration::from_millis(33));
+    }
+    #[test]
+    fn normal_gap_passes_through() {
+        let t0 = Instant::now();
+        let d = sample_duration(Some(t0), t0 + Duration::from_millis(50), Duration::from_millis(33));
+        assert_eq!(d, Duration::from_millis(50));
+    }
+    #[test]
+    fn long_idle_gap_is_clamped_high() {
+        let t0 = Instant::now();
+        let d = sample_duration(Some(t0), t0 + Duration::from_secs(5), Duration::from_millis(33));
+        assert_eq!(d, Duration::from_millis(1000));
+    }
+    #[test]
+    fn zero_gap_is_clamped_low() {
+        let t0 = Instant::now();
+        assert_eq!(sample_duration(Some(t0), t0, Duration::from_millis(33)), Duration::from_millis(1));
     }
 }
