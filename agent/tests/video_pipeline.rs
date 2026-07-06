@@ -20,7 +20,9 @@ fn testpattern_pipeline_produces_encoded_keyframe() {
     let (_cmd_tx, cmd_rx) = std::sync::mpsc::channel::<PipelineCmd>();
     let factory: rd_agent::video::pipeline::SourceFactory =
         Box::new(|w, h| Box::new(TestPatternSource { width: w, height: h, fps: 30 }));
-    let pipeline = VideoPipeline::start(capturer, encoder, sink.clone(), 64, 64, 60, cmd_rx, factory);
+    let pipeline = VideoPipeline::start(
+        capturer, encoder, sink.clone(), 64, 64, std::time::Duration::from_secs(4), cmd_rx, factory,
+    );
     std::thread::sleep(std::time::Duration::from_millis(500));
     drop(pipeline); // stop
     let samples = sink.0.lock().unwrap();
@@ -37,7 +39,9 @@ fn pipeline_stops_producing_after_drop() {
     let (_cmd_tx, cmd_rx) = std::sync::mpsc::channel::<PipelineCmd>();
     let factory: rd_agent::video::pipeline::SourceFactory =
         Box::new(|w, h| Box::new(TestPatternSource { width: w, height: h, fps: 60 }));
-    let pipeline = VideoPipeline::start(capturer, encoder, sink.clone(), 64, 64, 60, cmd_rx, factory);
+    let pipeline = VideoPipeline::start(
+        capturer, encoder, sink.clone(), 64, 64, std::time::Duration::from_secs(4), cmd_rx, factory,
+    );
     std::thread::sleep(std::time::Duration::from_millis(300));
     drop(pipeline);
     // let any in-flight frame settle, then snapshot

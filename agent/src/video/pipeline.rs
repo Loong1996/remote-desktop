@@ -17,20 +17,29 @@ pub fn sample_duration(prev: Option<Instant>, now: Instant, fallback: Duration) 
     }
 }
 
+/// Force a keyframe when the interval has elapsed OR one was requested
+/// (resolution swap, or a browser PLI/FIR relayed as PipelineCmd::ForceKeyframe).
+pub fn should_force_keyframe(since_last: Duration, interval: Duration, requested: bool) -> bool {
+    requested || since_last >= interval
+}
+
 /// Commands applied by the pipeline thread between frames.
 pub enum PipelineCmd {
     Bitrate(u32),
     /// Switch capture to a new size: swap the capturer (via the source factory)
     /// and reset the encoder so the stream re-opens with SPS/PPS+IDR.
     Resolution(u32, u32),
+    /// Emit a keyframe on the next frame (relayed from an RTCP PLI/FIR).
+    ForceKeyframe,
 }
 
 /// Builds a capturer at the requested size (used for hot resolution switches).
 pub type SourceFactory = Box<dyn Fn(u32, u32) -> Box<dyn ScreenCapturer> + Send>;
 
 /// Runs capture → BGRA→I420 → encode → sink on a dedicated thread. The first
-/// frame and every `keyframe_interval`-th frame force an IDR. Dropping the
-/// `VideoPipeline` closes the frame channel and the thread exits.
+/// frame, every frame after `keyframe_interval` has elapsed since the last
+/// one, and any frame following a `PipelineCmd::ForceKeyframe` force an IDR.
+/// Dropping the `VideoPipeline` closes the frame channel and the thread exits.
 pub struct VideoPipeline {
     _stop: mpsc::Sender<()>,
 }
@@ -43,7 +52,7 @@ impl VideoPipeline {
         sink: Arc<dyn SampleSink>,
         dst_w: usize,
         dst_h: usize,
-        keyframe_interval: u64,
+        keyframe_interval: Duration,
         cmd_rx: mpsc::Receiver<PipelineCmd>,
         source_factory: SourceFactory,
     ) -> VideoPipeline {
@@ -59,7 +68,8 @@ impl VideoPipeline {
             let mut frame_rx = frame_rx;
             let (mut dst_w, mut dst_h) = (dst_w, dst_h);
             let mut n: u64 = 0;
-            let mut force_next_idr = false;
+            let mut force_next_idr = true; // first frame is a keyframe
+            let mut last_keyframe = Instant::now();
             let mut last_emit: Option<Instant> = None;
             // Stop when the VideoPipeline is dropped: its `_stop` Sender drops,
             // so try_recv() returns Disconnected (NOT Empty). Loop only while
@@ -69,6 +79,7 @@ impl VideoPipeline {
                 while let Ok(cmd) = cmd_rx.try_recv() {
                     match cmd {
                         PipelineCmd::Bitrate(bps) => encoder.set_bitrate(bps),
+                        PipelineCmd::ForceKeyframe => force_next_idr = true,
                         PipelineCmd::Resolution(w, h) => {
                             // Already capturing at this size (e.g. a state re-sync
                             // on control-channel open): skip the pointless swap.
@@ -122,8 +133,16 @@ impl VideoPipeline {
                     frame = newer;
                 }
                 let i420 = bgra_to_i420(&frame, dst_w, dst_h);
-                let force_idr = n.is_multiple_of(keyframe_interval) || force_next_idr;
+                let frame_time = Instant::now();
+                let force_idr = should_force_keyframe(
+                    frame_time.duration_since(last_keyframe),
+                    keyframe_interval,
+                    force_next_idr,
+                );
                 force_next_idr = false;
+                if force_idr {
+                    last_keyframe = frame_time;
+                }
                 match encoder.encode(&i420, force_idr) {
                     Ok(mut sample) => {
                         let now = Instant::now();
@@ -197,6 +216,15 @@ mod cmd_tests {
         fn write(&self, _s: EncodedSample) {}
     }
 
+    /// Records whether each encoded frame was a forced keyframe.
+    struct IdrRecordingEncoder { idrs: Arc<Mutex<Vec<bool>>> }
+    impl VideoEncoder for IdrRecordingEncoder {
+        fn encode(&mut self, _f: &I420, idr: bool) -> anyhow::Result<EncodedSample> {
+            self.idrs.lock().unwrap().push(idr);
+            Ok(EncodedSample { data: vec![0], duration: Duration::from_millis(33), keyframe: idr })
+        }
+    }
+
     fn wait_until(deadline_ms: u64, mut ok: impl FnMut() -> bool) -> bool {
         let t0 = std::time::Instant::now();
         while t0.elapsed() < Duration::from_millis(deadline_ms) {
@@ -217,7 +245,7 @@ mod cmd_tests {
         let _p = VideoPipeline::start(
             Box::new(LoopingSource { w: 2, h: 2, started: started.clone() }),
             Box::new(RecordingEncoder { events: events.clone() }),
-            Arc::new(NullSink), 2, 2, 60, rx,
+            Arc::new(NullSink), 2, 2, Duration::from_secs(3600), rx,
             Box::new(move |w, h| Box::new(LoopingSource { w, h, started: st.clone() })),
         );
         assert!(wait_until(2000, || events.lock().unwrap().len() >= 2));
@@ -233,7 +261,7 @@ mod cmd_tests {
         let _p = VideoPipeline::start(
             Box::new(LoopingSource { w: 2, h: 2, started: started.clone() }),
             Box::new(RecordingEncoder { events: events.clone() }),
-            Arc::new(NullSink), 2, 2, 60, rx,
+            Arc::new(NullSink), 2, 2, Duration::from_secs(3600), rx,
             Box::new(move |w, h| Box::new(LoopingSource { w, h, started: st.clone() })),
         );
         // let it run, then switch to 4x4
@@ -286,7 +314,7 @@ mod cmd_tests {
         let p = VideoPipeline::start(
             Box::new(CountingSource),
             Box::new(SlowEncoder { lumas: lumas.clone() }),
-            Arc::new(NullSink), 2, 2, 60, rx,
+            Arc::new(NullSink), 2, 2, Duration::from_secs(3600), rx,
             Box::new(move |w, h| Box::new(LoopingSource { w, h, started: st.clone() })),
         );
         // Capture emits every 5ms, encode takes 40ms: without drop-to-latest the
@@ -313,7 +341,7 @@ mod cmd_tests {
         let _p = VideoPipeline::start(
             Box::new(LoopingSource { w: 2, h: 2, started: started.clone() }),
             Box::new(RecordingEncoder { events: events.clone() }),
-            Arc::new(NullSink), 2, 2, 60, rx,
+            Arc::new(NullSink), 2, 2, Duration::from_secs(3600), rx,
             Box::new(move |w, h| Box::new(LoopingSource { w, h, started: st.clone() })),
         );
         assert!(wait_until(2000, || !started.lock().unwrap().is_empty()));
@@ -324,6 +352,46 @@ mod cmd_tests {
         std::thread::sleep(Duration::from_millis(300)); // several frame cycles
         assert_eq!(started.lock().unwrap().len(), 1, "capturer was restarted");
         assert!(!events.lock().unwrap().contains(&Ev::Reset), "encoder was reset");
+    }
+
+    #[test]
+    fn force_keyframe_cmd_makes_next_frame_a_keyframe() {
+        // Use a long interval so only the explicit request forces a keyframe.
+        let started = Arc::new(Mutex::new(Vec::new()));
+        let idrs = Arc::new(Mutex::new(Vec::new()));
+        let (tx, rx) = std::sync::mpsc::channel::<PipelineCmd>();
+        let st = started.clone();
+        let _p = VideoPipeline::start(
+            Box::new(LoopingSource { w: 2, h: 2, started: started.clone() }),
+            Box::new(IdrRecordingEncoder { idrs: idrs.clone() }),
+            Arc::new(NullSink), 2, 2, Duration::from_secs(3600), rx,
+            Box::new(move |w, h| Box::new(LoopingSource { w, h, started: st.clone() })),
+        );
+        assert!(wait_until(2000, || idrs.lock().unwrap().len() > 3));
+        let before = idrs.lock().unwrap().iter().filter(|k| **k).count();
+        tx.send(PipelineCmd::ForceKeyframe).unwrap();
+        assert!(wait_until(2000, || idrs.lock().unwrap().iter().filter(|k| **k).count() > before),
+            "no keyframe after ForceKeyframe");
+    }
+}
+
+#[cfg(test)]
+mod keyframe_tests {
+    use super::should_force_keyframe;
+    use std::time::Duration;
+
+    #[test]
+    fn forces_when_interval_elapsed() {
+        assert!(should_force_keyframe(Duration::from_secs(4), Duration::from_secs(4), false));
+        assert!(should_force_keyframe(Duration::from_secs(5), Duration::from_secs(4), false));
+    }
+    #[test]
+    fn no_force_before_interval() {
+        assert!(!should_force_keyframe(Duration::from_secs(1), Duration::from_secs(4), false));
+    }
+    #[test]
+    fn request_overrides_interval() {
+        assert!(should_force_keyframe(Duration::from_millis(1), Duration::from_secs(4), true));
     }
 }
 

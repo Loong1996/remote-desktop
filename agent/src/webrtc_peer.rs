@@ -457,7 +457,8 @@ impl PeerSession {
         let factory: crate::video::pipeline::SourceFactory =
             Box::new(move |w, h| make_source(w, h, fps));
         let video = VideoPipeline::start(
-            capturer, encoder, sink, dst_w as usize, dst_h as usize, 60, cmd_rx, factory,
+            capturer, encoder, sink, dst_w as usize, dst_h as usize,
+            std::time::Duration::from_secs(4), cmd_rx, factory,
         );
         Self::finish(pc, input_tx, Some(video), keep_awake)
     }
