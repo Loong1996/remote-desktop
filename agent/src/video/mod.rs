@@ -12,6 +12,9 @@ pub mod testpattern;
 #[cfg(target_os = "macos")]
 pub mod sck_capturer;
 
+#[cfg(target_os = "macos")]
+pub mod videotoolbox_encoder;
+
 /// Round down to an even number (H.264 needs even width/height).
 fn even(n: u32) -> u32 {
     n & !1
