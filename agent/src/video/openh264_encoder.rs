@@ -1,4 +1,4 @@
-use crate::video::{EncodedSample, VideoEncoder, I420};
+use crate::video::{EncodedSample, VideoEncoder};
 use openh264::encoder::{BitRate, Encoder, EncoderConfig, FrameRate};
 use openh264::formats::YUVSlices;
 use std::time::Duration;
@@ -37,7 +37,7 @@ impl Openh264Encoder {
 }
 
 impl VideoEncoder for Openh264Encoder {
-    fn encode(&mut self, frame: &I420, force_idr: bool) -> anyhow::Result<EncodedSample> {
+    fn encode(&mut self, frame: &crate::video::Frame, force_idr: bool) -> anyhow::Result<EncodedSample> {
         // A pending reset() rebuild happens here, so a stale codec is never fed
         // frames at new dimensions: if the rebuild fails the frame errors out
         // (caught + logged by the pipeline) instead of reaching the old encoder.
@@ -52,10 +52,11 @@ impl VideoEncoder for Openh264Encoder {
             self.encoder.force_intra_frame();
         }
         self.force_idr_next = false;
+        let i420 = crate::video::convert::bgra_to_i420(frame, frame.width as usize, frame.height as usize);
         let yuv = YUVSlices::new(
-            (&frame.y, &frame.u, &frame.v),
-            (frame.width, frame.height),
-            (frame.y_stride, frame.uv_stride, frame.uv_stride),
+            (&i420.y, &i420.u, &i420.v),
+            (i420.width, i420.height),
+            (i420.y_stride, i420.uv_stride, i420.uv_stride),
         );
         let bitstream = self.encoder.encode(&yuv)?;
         let data = bitstream.to_vec();
@@ -89,16 +90,10 @@ impl VideoEncoder for Openh264Encoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::video::{VideoEncoder, I420};
+    use crate::video::VideoEncoder;
 
-    fn gray_i420(w: usize, h: usize) -> I420 {
-        I420 {
-            width: w, height: h,
-            y: vec![128u8; w * h],
-            u: vec![128u8; (w / 2) * (h / 2)],
-            v: vec![128u8; (w / 2) * (h / 2)],
-            y_stride: w, uv_stride: w / 2,
-        }
+    fn gray_bgra(w: usize, h: usize) -> crate::video::Frame {
+        crate::video::Frame { width: w as u32, height: h as u32, stride: w * 4, data: vec![128u8; w * h * 4], ts_micros: 0 }
     }
 
     // The first encoded frame must be a keyframe carrying SPS(7)+PPS(8)+IDR(5)
@@ -106,7 +101,7 @@ mod tests {
     #[test]
     fn first_frame_is_keyframe_with_parameter_sets() {
         let mut enc = Openh264Encoder::new(64, 64, 1_000_000, 30.0).unwrap();
-        let sample = enc.encode(&gray_i420(64, 64), true).unwrap();
+        let sample = enc.encode(&gray_bgra(64, 64), true).unwrap();
         assert!(!sample.data.is_empty());
         assert!(sample.keyframe);
         let types = nal_types(&sample.data);
@@ -118,18 +113,18 @@ mod tests {
     #[test]
     fn subsequent_frame_encodes_without_error() {
         let mut enc = Openh264Encoder::new(64, 64, 1_000_000, 30.0).unwrap();
-        let _ = enc.encode(&gray_i420(64, 64), true).unwrap();
-        let s = enc.encode(&gray_i420(64, 64), false).unwrap();
+        let _ = enc.encode(&gray_bgra(64, 64), true).unwrap();
+        let s = enc.encode(&gray_bgra(64, 64), false).unwrap();
         assert!(!s.data.is_empty());
     }
 
     #[test]
     fn set_bitrate_rebuild_still_emits_keyframe() {
         let mut enc = Openh264Encoder::new(64, 64, 1_000_000, 30.0).unwrap();
-        let _ = enc.encode(&gray_i420(64, 64), true).unwrap();
+        let _ = enc.encode(&gray_bgra(64, 64), true).unwrap();
         enc.set_bitrate(4_000_000);
         // force_idr=false, but the rebuilt encoder must still emit SPS+PPS+IDR.
-        let s = enc.encode(&gray_i420(64, 64), false).unwrap();
+        let s = enc.encode(&gray_bgra(64, 64), false).unwrap();
         assert!(s.keyframe);
         let types = nal_types(&s.data);
         assert!(types.contains(&7) && types.contains(&8) && types.contains(&5), "got {types:?}");
@@ -138,9 +133,9 @@ mod tests {
     #[test]
     fn reset_then_encode_emits_keyframe_with_parameter_sets() {
         let mut enc = Openh264Encoder::new(64, 64, 1_000_000, 30.0).unwrap();
-        let _ = enc.encode(&gray_i420(64, 64), true).unwrap();
+        let _ = enc.encode(&gray_bgra(64, 64), true).unwrap();
         enc.reset();
-        let s = enc.encode(&gray_i420(64, 64), false).unwrap();
+        let s = enc.encode(&gray_bgra(64, 64), false).unwrap();
         assert!(s.keyframe);
         let types = nal_types(&s.data);
         assert!(types.contains(&7) && types.contains(&8) && types.contains(&5), "got {types:?}");

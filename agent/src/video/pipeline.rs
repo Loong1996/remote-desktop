@@ -1,4 +1,4 @@
-use crate::video::convert::bgra_to_i420;
+use crate::video::convert::resize_bgra_frame;
 use crate::video::{ScreenCapturer, SampleSink, VideoEncoder};
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -132,7 +132,7 @@ impl VideoPipeline {
                 while let Ok(newer) = frame_rx.try_recv() {
                     frame = newer;
                 }
-                let i420 = bgra_to_i420(&frame, dst_w, dst_h);
+                let sized = resize_bgra_frame(&frame, dst_w, dst_h);
                 let frame_time = Instant::now();
                 let force_idr = should_force_keyframe(
                     frame_time.duration_since(last_keyframe),
@@ -143,7 +143,7 @@ impl VideoPipeline {
                 if force_idr {
                     last_keyframe = frame_time;
                 }
-                match encoder.encode(&i420, force_idr) {
+                match encoder.encode(&sized, force_idr) {
                     Ok(mut sample) => {
                         let now = Instant::now();
                         sample.duration = sample_duration(last_emit, now, sample.duration);
@@ -174,7 +174,7 @@ fn start_source(
 #[cfg(test)]
 mod cmd_tests {
     use super::*;
-    use crate::video::{EncodedSample, Frame, I420, SampleSink, ScreenCapturer, VideoEncoder};
+    use crate::video::{EncodedSample, Frame, SampleSink, ScreenCapturer, VideoEncoder};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
@@ -204,7 +204,7 @@ mod cmd_tests {
     enum Ev { Bitrate(u32), Reset }
     struct RecordingEncoder { events: Arc<Mutex<Vec<Ev>>> }
     impl VideoEncoder for RecordingEncoder {
-        fn encode(&mut self, _f: &I420, _idr: bool) -> anyhow::Result<EncodedSample> {
+        fn encode(&mut self, _f: &Frame, _idr: bool) -> anyhow::Result<EncodedSample> {
             Ok(EncodedSample { data: vec![0], duration: Duration::from_millis(33), keyframe: true })
         }
         fn set_bitrate(&mut self, bps: u32) { self.events.lock().unwrap().push(Ev::Bitrate(bps)); }
@@ -219,7 +219,7 @@ mod cmd_tests {
     /// Records whether each encoded frame was a forced keyframe.
     struct IdrRecordingEncoder { idrs: Arc<Mutex<Vec<bool>>> }
     impl VideoEncoder for IdrRecordingEncoder {
-        fn encode(&mut self, _f: &I420, idr: bool) -> anyhow::Result<EncodedSample> {
+        fn encode(&mut self, _f: &Frame, idr: bool) -> anyhow::Result<EncodedSample> {
             self.idrs.lock().unwrap().push(idr);
             Ok(EncodedSample { data: vec![0], duration: Duration::from_millis(33), keyframe: idr })
         }
@@ -298,8 +298,8 @@ mod cmd_tests {
         lumas: Arc<Mutex<Vec<u8>>>,
     }
     impl VideoEncoder for SlowEncoder {
-        fn encode(&mut self, f: &I420, _idr: bool) -> anyhow::Result<EncodedSample> {
-            self.lumas.lock().unwrap().push(f.y[0]);
+        fn encode(&mut self, f: &Frame, _idr: bool) -> anyhow::Result<EncodedSample> {
+            self.lumas.lock().unwrap().push(f.data[0]);
             std::thread::sleep(Duration::from_millis(40));
             Ok(EncodedSample { data: vec![0], duration: Duration::from_millis(33), keyframe: true })
         }

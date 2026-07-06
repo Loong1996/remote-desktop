@@ -123,9 +123,10 @@ pub trait ScreenCapturer: Send {
     fn start(&mut self, sink: std::sync::mpsc::Sender<Frame>) -> anyhow::Result<()>;
 }
 
-/// Encodes I420 frames to H.264 Annex-B. `force_idr` requests a keyframe.
+/// Encodes BGRA frames to H.264 Annex-B. `force_idr` requests a keyframe.
 pub trait VideoEncoder: Send {
-    fn encode(&mut self, frame: &I420, force_idr: bool) -> anyhow::Result<EncodedSample>;
+    /// Encode a BGRA frame (already at the target size) to H.264 Annex-B.
+    fn encode(&mut self, frame: &Frame, force_idr: bool) -> anyhow::Result<EncodedSample>;
     /// Change the target bitrate for subsequent frames. Default: no-op.
     fn set_bitrate(&mut self, _bitrate_bps: u32) {}
     /// Drop internal codec state so the next frame re-initializes at the

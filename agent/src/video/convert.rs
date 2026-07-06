@@ -20,6 +20,13 @@ fn resize_bgra(frame: &Frame, dst_w: usize, dst_h: usize) -> Vec<u8> {
     out
 }
 
+/// Resize a BGRA frame to `dst_w`×`dst_h`, returning a tightly-packed BGRA Frame
+/// (stride = dst_w*4). A no-op copy when the source already matches.
+pub fn resize_bgra_frame(frame: &Frame, dst_w: usize, dst_h: usize) -> Frame {
+    let data = resize_bgra(frame, dst_w, dst_h);
+    Frame { width: dst_w as u32, height: dst_h as u32, stride: dst_w * 4, data, ts_micros: frame.ts_micros }
+}
+
 /// Convert a BGRA frame to I420, resizing to `dst_w`×`dst_h` first if needed.
 pub fn bgra_to_i420(frame: &Frame, dst_w: usize, dst_h: usize) -> I420 {
     if dst_w == 0 || dst_h == 0 {
@@ -91,6 +98,13 @@ mod tests {
         let i = bgra_to_i420(&solid_bgra(16, 16, 0, 0, 0), 0, 0);
         assert_eq!((i.width, i.height), (0, 0));
         assert!(i.y.is_empty() && i.u.is_empty() && i.v.is_empty());
+    }
+
+    #[test]
+    fn resize_bgra_frame_targets_and_packs() {
+        let f = resize_bgra_frame(&solid_bgra(32, 32, 10, 20, 30), 16, 16);
+        assert_eq!((f.width, f.height, f.stride), (16, 16, 16 * 4));
+        assert_eq!(f.data.len(), 16 * 16 * 4);
     }
 
     #[test]
