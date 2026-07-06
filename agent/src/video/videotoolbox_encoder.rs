@@ -311,6 +311,10 @@ unsafe fn sample_to_annexb(sb: &CMSampleBuffer) -> CallbackMsg {
             if st != 0 || ps_ptr.is_null() {
                 return Err(format!("H264 parameter set {idx} fetch failed: {st}"));
             }
+            // VideoToolbox always emits a 4-byte NAL length prefix for H.264, which
+            // the AVCC→Annex-B loop below hard-codes. Assert the invariant so a
+            // future toolchain change that returned a different width is caught.
+            debug_assert_eq!(nal_hdr_len, 4, "VT H.264 NAL length prefix is always 4 bytes");
             out.extend_from_slice(&[0, 0, 0, 1]);
             // SAFETY: ps_ptr/ps_size describe VT-internal memory valid while `fd`
             // is retained (it is, for this scope).
@@ -407,6 +411,14 @@ impl VideoEncoder for VideoToolboxEncoder {
         // frame; a rebuild failure surfaces as a per-frame Err (pipeline logs it).
         let mut force = force_idr;
         if self.needs_reopen {
+            // A VTCompressionSession is bound to its create-time dimensions, so a
+            // resolution hot-switch (pipeline resizes frames, then calls reset())
+            // must rebuild the session at the incoming frame's size. Unlike
+            // openh264, VT cannot infer size per frame; adopt the authoritative
+            // size the pipeline already resized this frame to. Defense-in-depth:
+            // a reset() followed by a frame of ANY size reopens correctly.
+            self.width = frame.width;
+            self.height = frame.height;
             self.reopen()?;
             self.needs_reopen = false;
             force = true; // fresh session must open on a keyframe
@@ -554,6 +566,18 @@ impl Drop for VideoToolboxEncoder {
 mod tests {
     use super::VideoToolboxEncoder;
     use crate::video::{Frame, VideoEncoder};
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    /// VideoToolbox is a shared hardware encoder: creating several
+    /// `VTCompressionSession`s concurrently across cargo's parallel test threads
+    /// can make the H.264 encoder emit keyframes without SPS/PPS (observed as an
+    /// SEI+IDR-only Annex-B stream) and can briefly degrade system-wide VT state.
+    /// Serialize the encoder tests so at most one session is live at a time.
+    fn vt_test_guard() -> MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        // Recover from a poisoned lock: a panicking test still frees the hardware.
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap_or_else(|e| e.into_inner())
+    }
 
     fn bgra(w: usize, h: usize) -> Frame {
         Frame { width: w as u32, height: h as u32, stride: w * 4, data: vec![128u8; w * h * 4], ts_micros: 0 }
@@ -570,8 +594,129 @@ mod tests {
         out
     }
 
+    /// Extract the raw bytes of the first NAL of `want_type` from a 4-byte
+    /// start-code Annex-B stream (includes the 1-byte NAL header).
+    fn find_nal(annexb: &[u8], want_type: u8) -> Option<Vec<u8>> {
+        let mut starts = Vec::new();
+        let mut i = 0;
+        while i + 4 <= annexb.len() {
+            if annexb[i] == 0 && annexb[i + 1] == 0 && annexb[i + 2] == 0 && annexb[i + 3] == 1 {
+                starts.push(i + 4);
+                i += 4;
+            } else {
+                i += 1;
+            }
+        }
+        for (idx, &s) in starts.iter().enumerate() {
+            let end = if idx + 1 < starts.len() { starts[idx + 1] - 4 } else { annexb.len() };
+            if s < end && (annexb[s] & 0x1f) == want_type {
+                return Some(annexb[s..end].to_vec());
+            }
+        }
+        None
+    }
+
+    /// Strip H.264 emulation-prevention (00 00 03) bytes to recover the RBSP.
+    fn rbsp(nal: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(nal.len());
+        let mut zeros = 0;
+        for &b in nal {
+            if zeros >= 2 && b == 0x03 {
+                zeros = 0;
+                continue;
+            }
+            out.push(b);
+            if b == 0 { zeros += 1; } else { zeros = 0; }
+        }
+        out
+    }
+
+    /// Minimal MSB-first bit reader with Exp-Golomb decoders for SPS parsing.
+    struct BitReader<'a> { d: &'a [u8], pos: usize }
+    impl<'a> BitReader<'a> {
+        fn new(d: &'a [u8]) -> Self { Self { d, pos: 0 } }
+        fn bit(&mut self) -> u32 {
+            let byte = self.pos / 8;
+            let off = 7 - (self.pos % 8);
+            self.pos += 1;
+            ((self.d[byte] >> off) & 1) as u32
+        }
+        fn bits(&mut self, n: u32) -> u32 {
+            let mut v = 0;
+            for _ in 0..n { v = (v << 1) | self.bit(); }
+            v
+        }
+        fn ue(&mut self) -> u32 {
+            let mut z = 0;
+            while self.bit() == 0 { z += 1; }
+            if z == 0 { 0 } else { ((1u32 << z) - 1) + self.bits(z) }
+        }
+        fn se(&mut self) -> i32 {
+            let k = self.ue();
+            if k % 2 == 1 { k.div_ceil(2) as i32 } else { -((k / 2) as i32) }
+        }
+    }
+
+    /// Decode the coded (cropped) luma dimensions from an H.264 SPS NAL.
+    /// Handles Baseline/ConstrainedBaseline (what this encoder emits).
+    fn sps_dimensions(sps_nal: &[u8]) -> (u32, u32) {
+        let rbsp = rbsp(sps_nal);
+        // Skip the 1-byte NAL header; parse the SPS RBSP body.
+        let mut r = BitReader::new(&rbsp[1..]);
+        let profile_idc = r.bits(8);
+        let _constraints_and_reserved = r.bits(8);
+        let _level_idc = r.bits(8);
+        let _sps_id = r.ue();
+        // 4:2:0 is the default chroma format when the high-profile block is absent.
+        let mut chroma_format_idc = 1u32;
+        if matches!(profile_idc, 100 | 110 | 122 | 244 | 44 | 83 | 86 | 118 | 128 | 138 | 139 | 134 | 135) {
+            chroma_format_idc = r.ue();
+            if chroma_format_idc == 3 { let _ = r.bit(); }
+            let _ = r.ue(); // bit_depth_luma_minus8
+            let _ = r.ue(); // bit_depth_chroma_minus8
+            let _ = r.bit(); // qpprime_y_zero_transform_bypass_flag
+            let seq_scaling_matrix_present = r.bit();
+            assert_eq!(seq_scaling_matrix_present, 0, "scaling matrices not expected for baseline");
+        }
+        let _ = r.ue(); // log2_max_frame_num_minus4
+        let poc_type = r.ue();
+        if poc_type == 0 {
+            let _ = r.ue(); // log2_max_pic_order_cnt_lsb_minus4
+        } else if poc_type == 1 {
+            let _ = r.bit(); // delta_pic_order_always_zero_flag
+            let _ = r.se(); // offset_for_non_ref_pic
+            let _ = r.se(); // offset_for_top_to_bottom_field
+            let n = r.ue();
+            for _ in 0..n { let _ = r.se(); }
+        }
+        let _ = r.ue(); // max_num_ref_frames
+        let _ = r.bit(); // gaps_in_frame_num_value_allowed_flag
+        let pic_width_in_mbs_minus1 = r.ue();
+        let pic_height_in_map_units_minus1 = r.ue();
+        let frame_mbs_only_flag = r.bit();
+        if frame_mbs_only_flag == 0 { let _ = r.bit(); } // mb_adaptive_frame_field_flag
+        let _ = r.bit(); // direct_8x8_inference_flag
+        let (mut crop_l, mut crop_r, mut crop_t, mut crop_b) = (0u32, 0u32, 0u32, 0u32);
+        if r.bit() == 1 {
+            crop_l = r.ue();
+            crop_r = r.ue();
+            crop_t = r.ue();
+            crop_b = r.ue();
+        }
+        let width = (pic_width_in_mbs_minus1 + 1) * 16;
+        let height = (pic_height_in_map_units_minus1 + 1) * 16 * (2 - frame_mbs_only_flag);
+        // ChromaArrayType==1 (4:2:0) → SubWidthC=SubHeightC=2.
+        let (sub_w, sub_h) = if chroma_format_idc == 1 { (2, 2) } else { (1, 1) };
+        let crop_unit_x = sub_w;
+        let crop_unit_y = sub_h * (2 - frame_mbs_only_flag);
+        let width = width - (crop_l + crop_r) * crop_unit_x;
+        let height = height - (crop_t + crop_b) * crop_unit_y;
+        (width, height)
+    }
+
     #[test]
     fn first_frame_is_keyframe_with_parameter_sets() {
+        let _guard = vt_test_guard();
         let mut enc = VideoToolboxEncoder::new(320, 240, 1_000_000, 30.0).unwrap();
         let s = enc.encode(&bgra(320, 240), true).unwrap();
         assert!(s.keyframe && !s.data.is_empty());
@@ -580,6 +725,7 @@ mod tests {
     }
     #[test]
     fn second_frame_encodes_and_bitrate_reset_ok() {
+        let _guard = vt_test_guard();
         let mut enc = VideoToolboxEncoder::new(320, 240, 1_000_000, 30.0).unwrap();
         let _ = enc.encode(&bgra(320, 240), true).unwrap();
         enc.set_bitrate(2_000_000);
@@ -588,5 +734,33 @@ mod tests {
         enc.reset();
         let s2 = enc.encode(&bgra(320, 240), false).unwrap();
         assert!(s2.keyframe, "reset must re-open with a keyframe");
+    }
+
+    /// Resolution hot-switch: after reset(), a frame at a NEW size must reopen the
+    /// VTCompressionSession at that size. Before the fix, reopen() recreated the
+    /// session at the stale constructor dimensions (320x240) while being fed a
+    /// 640x480 CVPixelBuffer, producing a per-frame encode error (or wrong-sized
+    /// output) that froze the stream. We assert Ok + keyframe AND parse the SPS to
+    /// prove the coded dimensions actually track the new frame size.
+    #[test]
+    fn reset_reopens_at_new_frame_resolution() {
+        let _guard = vt_test_guard();
+        let mut enc = VideoToolboxEncoder::new(320, 240, 1_000_000, 30.0).unwrap();
+        let s0 = enc.encode(&bgra(320, 240), true).unwrap();
+        assert!(s0.keyframe && !s0.data.is_empty());
+
+        // Pipeline resizes to the new target, then resets the encoder.
+        enc.reset();
+        let s1 = enc.encode(&bgra(640, 480), false).unwrap();
+        // A stale-dimension session would have errored on this encode; reaching a
+        // non-empty keyframe here is the first-order signal that reopen adopted the
+        // new size.
+        assert!(s1.keyframe, "reset must re-open at the new size with a keyframe");
+        assert!(!s1.data.is_empty(), "post-reset frame produced no data");
+
+        // Stronger: the SPS carried in the reopened keyframe must code 640x480.
+        let sps = find_nal(&s1.data, 7).expect("keyframe must carry an SPS");
+        let (w, h) = sps_dimensions(&sps);
+        assert_eq!((w, h), (640, 480), "SPS must code the new resolution, got {w}x{h}");
     }
 }
