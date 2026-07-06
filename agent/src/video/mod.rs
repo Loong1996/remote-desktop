@@ -92,6 +92,30 @@ pub fn make_source(w: u32, h: u32, fps: u32) -> Box<dyn ScreenCapturer> {
     }
 }
 
+/// Build the H.264 encoder for the platform: VideoToolbox on macOS (hardware),
+/// falling back to openh264 if the session can't be created; openh264 elsewhere.
+/// `RD_VIDEO_ENCODER=openh264` forces software (debugging).
+pub fn build_encoder(
+    width: u32,
+    height: u32,
+    bitrate_bps: u32,
+    fps: f32,
+) -> anyhow::Result<Box<dyn VideoEncoder>> {
+    let force_sw = std::env::var("RD_VIDEO_ENCODER").as_deref() == Ok("openh264");
+    #[cfg(target_os = "macos")]
+    {
+        if !force_sw {
+            match videotoolbox_encoder::VideoToolboxEncoder::new(width, height, bitrate_bps, fps) {
+                Ok(enc) => return Ok(Box::new(enc)),
+                Err(e) => tracing::warn!("VideoToolbox init failed, falling back to openh264: {e}"),
+            }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = force_sw;
+    Ok(Box::new(openh264_encoder::Openh264Encoder::new(width, height, bitrate_bps, fps)?))
+}
+
 /// One captured frame of raw BGRA8888 pixels. `stride` is bytes per row
 /// (>= width*4) to allow row padding from the capture source.
 pub struct Frame {
@@ -247,6 +271,30 @@ mod rtcp_tests {
     #[test]
     fn empty_does_not() {
         assert!(!rtcp_requests_keyframe(&[]));
+    }
+}
+
+#[cfg(test)]
+mod build_encoder_tests {
+    use super::{build_encoder, Frame};
+
+    #[test]
+    fn builds_a_working_encoder_and_encodes_a_frame() {
+        // On macOS this is VideoToolbox (or openh264 if VT init fails); elsewhere
+        // openh264. Either way we must get an encoder that produces a keyframe.
+        let mut enc = build_encoder(320, 240, 1_000_000, 30.0).expect("encoder");
+        let f = Frame { width: 320, height: 240, stride: 320 * 4, data: vec![128u8; 320 * 240 * 4], ts_micros: 0 };
+        let s = enc.encode(&f, true).unwrap();
+        assert!(s.keyframe && !s.data.is_empty());
+    }
+
+    #[test]
+    fn env_forces_software_encoder() {
+        // RD_VIDEO_ENCODER=openh264 must yield a functioning software encoder.
+        std::env::set_var("RD_VIDEO_ENCODER", "openh264");
+        let r = build_encoder(320, 240, 1_000_000, 30.0);
+        std::env::remove_var("RD_VIDEO_ENCODER");
+        assert!(r.is_ok());
     }
 }
 

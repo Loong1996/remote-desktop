@@ -2,7 +2,6 @@ use crate::clipboard;
 use crate::control::{ClipMode, ControlMessage};
 use crate::input::{InputEvent, InputInjector};
 use crate::protocol::IceServer;
-use crate::video::openh264_encoder::Openh264Encoder;
 use crate::video::pipeline::{PipelineCmd, VideoPipeline};
 use crate::video::{make_source, EncodedSample, SampleSink};
 use anyhow::Result;
@@ -435,8 +434,8 @@ impl PeerSession {
         // video track, so the remote negotiates input-only rather than a
         // sendonly video m-line that is never fed (black screen).
         let encoder: Box<dyn crate::video::VideoEncoder> =
-            match Openh264Encoder::new(dst_w, dst_h, 3_000_000, fps as f32) {
-                Ok(e) => Box::new(e),
+            match crate::video::build_encoder(dst_w, dst_h, 3_000_000, fps as f32) {
+                Ok(e) => e,
                 Err(e) => {
                     tracing::error!("H264 encoder init failed, video disabled: {e}");
                     // still return a session (input-only) — mirror the injector-fail path
