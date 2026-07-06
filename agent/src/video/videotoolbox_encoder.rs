@@ -325,14 +325,35 @@ unsafe fn sample_to_annexb(sb: &CMSampleBuffer) -> CallbackMsg {
         None => return Err("sample without data buffer".to_string()),
     };
     let mut total: usize = 0;
+    let mut length_at_offset: usize = 0;
     let mut data_ptr: *mut c_char = ptr::null_mut();
-    // SAFETY: valid block buffer; requesting the full contiguous range.
-    let st = unsafe { block.data_pointer(0, ptr::null_mut(), &mut total, &mut data_ptr) };
+    // SAFETY: valid block buffer; request the contiguous run length at offset 0
+    // AND the total logical length so we can detect a non-contiguous buffer.
+    let st = unsafe { block.data_pointer(0, &mut length_at_offset, &mut total, &mut data_ptr) };
     if st != 0 || data_ptr.is_null() {
         return Err(format!("CMBlockBufferGetDataPointer failed: {st}"));
     }
-    // SAFETY: data_ptr/total describe the block buffer's contiguous bytes.
-    let avcc = unsafe { std::slice::from_raw_parts(data_ptr as *const u8, total) };
+    // Fast path: the whole logical range is contiguous, so borrow it copy-free.
+    // Slow path: the block buffer is segmented and `data_ptr` is only valid for
+    // the first `length_at_offset` bytes; copy the full range out before parsing
+    // so we never read past the first block.
+    let owned: Vec<u8>;
+    let avcc: &[u8] = if length_at_offset == total {
+        // SAFETY: data_ptr is valid for `total` contiguous bytes on this path.
+        unsafe { std::slice::from_raw_parts(data_ptr as *const u8, total) }
+    } else {
+        let mut buf = vec![0u8; total];
+        // SAFETY: valid block buffer; `buf` owns `total` writable bytes and is a
+        // valid, non-null destination for the full logical range.
+        let cst = unsafe {
+            block.copy_data_bytes(0, total, NonNull::new(buf.as_mut_ptr() as *mut c_void).unwrap())
+        };
+        if cst != 0 {
+            return Err(format!("CMBlockBufferCopyDataBytes failed: {cst}"));
+        }
+        owned = buf;
+        &owned
+    };
     let mut i = 0usize;
     while i + 4 <= total {
         let nal_len =
@@ -389,6 +410,18 @@ impl VideoEncoder for VideoToolboxEncoder {
             self.reopen()?;
             self.needs_reopen = false;
             force = true; // fresh session must open on a keyframe
+        }
+
+        // Guard against a malformed frame: CV reads `stride * height` bytes from
+        // the borrowed buffer, so a short `frame.data` would be an OOB read in VT.
+        let needed = frame.stride.saturating_mul(frame.height as usize);
+        if frame.data.len() < needed {
+            anyhow::bail!(
+                "frame data too small: {} bytes < stride {} * height {} = {needed}",
+                frame.data.len(),
+                frame.stride,
+                frame.height,
+            );
         }
 
         // Wrap the BGRA bytes in a CVPixelBuffer (a copy-free borrow: the encoder
@@ -452,6 +485,10 @@ impl VideoEncoder for VideoToolboxEncoder {
             )
         };
         if st != 0 {
+            // The frame may already have been submitted and the callback may have
+            // queued a message; drain it so the channel is empty for the next
+            // encode() (contract: exactly one recv() per encode()).
+            while self.rx.try_recv().is_ok() {}
             anyhow::bail!("VTCompressionSessionEncodeFrame failed: {st}");
         }
 
@@ -459,6 +496,11 @@ impl VideoEncoder for VideoToolboxEncoder {
         // SAFETY: valid session; completes frames up to and including `pts`.
         let cf_st = unsafe { self.session.complete_frames(pts) };
         if cf_st != 0 {
+            // CompleteFrames fires the output callback before returning its status,
+            // so a stale sample may be queued even on failure; drain it to keep the
+            // one-message-per-encode() invariant (else the next encode() would
+            // recv() this frame's bytes and keyframe flag).
+            while self.rx.try_recv().is_ok() {}
             anyhow::bail!("VTCompressionSessionCompleteFrames failed: {cf_st}");
         }
 
